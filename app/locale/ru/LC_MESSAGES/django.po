@@ -1,0 +1,290 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2025-04-06 03:59+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=4; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && "
+"n%10<=4 && (n%100<12 || n%100>14) ? 1 : n%10==0 || (n%10>=5 && n%10<=9) || "
+"(n%100>=11 && n%100<=14)? 2 : 3);\n"
+#: account/models/user.py:16
+msgid "The Email field is required"
+msgstr ""
+
+#: account/models/user.py:34
+msgid "Superuser must have is_staff=True."
+msgstr ""
+
+#: account/models/user.py:36
+msgid "Superuser must have is_superuser=True."
+msgstr ""
+
+#: account/models/user.py:53
+msgid "email address"
+msgstr ""
+
+#: account/models/user.py:54
+msgid "Enter a valid email address."
+msgstr ""
+
+#: account/models/user.py:57
+msgid "phone number"
+msgstr ""
+
+#: account/templates/account/registration/password_reset_confirm.html:163
+msgid "Home"
+msgstr ""
+
+#: account/templates/account/registration/password_reset_confirm.html:164
+msgid "Password reset confirmation"
+msgstr ""
+
+#: account/templates/account/registration/password_reset_confirm.html:171
+msgid "Enter your new password"
+msgstr ""
+
+#: account/templates/account/registration/password_reset_confirm.html:172
+msgid ""
+"Please enter your new password twice so we can verify you typed it in "
+"correctly."
+msgstr ""
+
+#: account/templates/account/registration/password_reset_confirm.html:179
+msgid "New password:"
+msgstr ""
+
+#: account/templates/account/registration/password_reset_confirm.html:184
+msgid "Confirm password:"
+msgstr ""
+
+#: account/templates/account/registration/password_reset_confirm.html:189
+msgid "Change my password"
+msgstr ""
+
+#: account/templates/account/registration/password_reset_confirm.html:194
+#: account/views/password_reset.py:138
+msgid "Password reset unsuccessful"
+msgstr ""
+
+#: account/templates/account/registration/password_reset_confirm.html:195
+msgid ""
+"The password reset link was invalid, possibly because it has already been "
+"used. Please request a new password reset."
+msgstr ""
+
+#: account/templates/admin/login.html:31
+msgid "Welcome back to"
+msgstr "С возвращением"
+
+#: account/templates/admin/login.html:44
+#, python-format
+msgid ""
+"You are authenticated as %(username)s, but are not authorized to access this "
+"page. Would you like to login to a different account?"
+msgstr ""
+
+#: account/templates/admin/login.html:67
+msgid "Log in"
+msgstr ""
+
+#: account/templates/admin/login.html:76
+msgid "Forgotten your password or email?"
+msgstr ""
+
+#: account/templates/admin/login.html:88
+msgid "Return to site"
+msgstr "Вернуться на сайт"
+
+#: account/views/password_reset.py:30
+msgid "Password reset"
+msgstr ""
+
+#: account/views/password_reset.py:55
+msgid "Password reset sent"
+msgstr ""
+
+#: account/views/password_reset.py:66
+msgid "Enter new password"
+msgstr ""
+
+#: account/views/password_reset.py:148
+msgid "Password reset complete"
+msgstr ""
+
+#: config/settings.py:371 config/settings.py:463
+msgid "Заказы"
+msgstr ""
+
+#: config/settings.py:376
+msgid "Чеки"
+msgstr ""
+
+#: config/settings.py:381
+msgid "Принтеры для чека"
+msgstr ""
+
+#: config/settings.py:393
+msgid "Навигация"
+msgstr ""
+
+#: config/settings.py:396
+msgid "Панель"
+msgstr ""
+
+#: config/settings.py:401
+msgid "POS системы"
+msgstr ""
+
+#: config/settings.py:409
+msgid "Главная"
+msgstr ""
+
+#: config/settings.py:412
+msgid "Заведение"
+msgstr ""
+
+#: config/settings.py:418
+msgid "Точки заведения"
+msgstr ""
+
+#: config/settings.py:423
+msgid "Залы"
+msgstr ""
+
+#: config/settings.py:428
+msgid "Столы"
+msgstr ""
+
+#: config/settings.py:435
+msgid "Меню"
+msgstr ""
+
+#: config/settings.py:438 menu/admin/admin_filters.py:9
+msgid "Категории"
+msgstr ""
+
+#: config/settings.py:443
+msgid "Товары"
+msgstr ""
+
+#: config/settings.py:450 config/settings.py:453
+msgid "Транзакции"
+msgstr ""
+
+#: config/settings.py:460
+msgid "Заказы & Клиенты"
+msgstr ""
+
+#: config/settings.py:468
+msgid "Клиенты"
+msgstr ""
+
+#: config/settings.py:475
+msgid "Пользователи & Группы"
+msgstr ""
+
+#: config/settings.py:479
+msgid "Пользователи"
+msgstr ""
+
+#: config/settings.py:485
+msgid "Группы"
+msgstr ""
+
+#: menu/templates/menu/change_list_before.html:6
+msgid "Все"
+msgstr ""
+
+#: orders/dashboard.py:78
+msgid "Количество заказов за последнюю неделю"
+msgstr ""
+
+#: orders/dashboard.py:111
+msgid "Dashboard"
+msgstr ""
+
+#: orders/dashboard.py:126
+msgid "All"
+msgstr ""
+
+#: orders/templates/admin/index.html:12
+msgid "Django site admin"
+msgstr ""
+
+#: orders/templates/admin/index.html:18
+msgid "Django administration"
+msgstr ""
+
+#: services/admin.py:11 services/admin.py:17
+msgid "Подробнее"
+msgstr ""
+
+#: venues/admin/admin_filters.py:9
+msgid "Spot"
+msgstr ""
+
+msgid "No results found"
+msgstr "Ничего не найдено"
+
+msgid "This page yielded into no results. Create a new item or reset your filters."
+msgstr "На этой странице нет результатов. Создайте новый элемент или сбросьте фильтры."
+
+msgid "Reset filters"
+msgstr "Сбросить фильтры"
+
+msgid "Dark"
+msgstr "Тёмная"
+
+msgid "Light"
+msgstr "Светлая"
+
+msgid "System"
+msgstr "Системная"
+
+msgid "Type to search"
+msgstr "Введите для поиска"
+
+msgid "Date from"
+msgstr "Дата с"
+
+msgid "Date to"
+msgstr "Дата по"
+
+msgid "Apply Filters"
+msgstr "Применить фильтры"
+
+msgid "You have been successfully logged out from the administration"
+msgstr "Вы успешно вышли из административной панели"
+
+msgid "Select value"
+msgstr "Выберите значение"
+
+msgid "By"
+msgstr "По"
+
+msgid "Choose file to upload"
+msgstr "Выберите файл для загрузки"
+
+msgid ""
+"Raw passwords are not stored, so there is no way to see this user’s password, "
+"but you can change the password using "
+"<a href=\"{}\" class=\"text-primary-600 dark:text-primary-500\">this form</a>."
+msgstr ""
+"Пароли в открытом виде не сохраняются, поэтому вы не можете увидеть пароль этого пользователя, "
+"но вы можете изменить его с помощью "
+"<a href=\"{}\" class=\"text-primary-600 dark:text-primary-500\">этой формы</a>."
+
+msgid "Forgotten your password?"
+msgstr "Забыли свой пароль?"
