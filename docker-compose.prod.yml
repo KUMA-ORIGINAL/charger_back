@@ -77,8 +77,6 @@ services:
       - certs:/etc/letsencrypt
     depends_on:
       - backend
-      - frontend
-      - frontend2
 
 volumes:
   database-storage:
