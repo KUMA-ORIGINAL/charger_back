@@ -65,7 +65,7 @@ class UserAdmin(UserAdmin, BaseModelAdmin):
 
 @admin.register(ChargePoint)
 class ChargePointAdmin(BaseModelAdmin):
-    list_display = ("cp_id", "name", 'detail_link')
+    list_display = ("cp_id", "name",)
     readonly_fields = ("created_at", "updated_at")
 
     actions_detail = ('start_charging_action', 'stop_charging_action')
