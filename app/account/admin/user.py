@@ -1,12 +1,17 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin, GroupAdmin
 from django.contrib.auth.models import Group
+from django.shortcuts import redirect
+from django.urls import reverse_lazy
 
 from unfold.admin import ModelAdmin as UnfoldModelAdmin
 from unfold.forms import AdminPasswordChangeForm, UserChangeForm, UserCreationForm
 
-from ..models import User
+from unfold.decorators import action
+
+from ..models import User, ChargePoint
 from common.base_admin import BaseModelAdmin
+from ..services.ocpp_commands import start_charging, stop_charging
 
 admin.site.unregister(Group)
 
@@ -56,3 +61,51 @@ class UserAdmin(UserAdmin, BaseModelAdmin):
         if request.user.is_superuser:
             pass
         return list_display
+
+
+@admin.register(ChargePoint)
+class ChargePointAdmin(BaseModelAdmin):
+    list_display = ("cp_id", "name")
+    readonly_fields = ("created_at", "updated_at")
+
+    actions_detail = ('start_charging_action', 'stop_charging_action')
+
+    @action(
+        description="▶ Start charging",
+        url_path="start-charging",
+    )
+    def start_charging_action(
+        self,
+        request,
+        object_id,
+    ):
+        """
+        Action на странице объекта
+        """
+        cp = ChargePoint.objects.get(pk=object_id)
+
+        start_charging(cp.cp_id)
+
+        return redirect(
+            reverse_lazy("admin:account_chargepoint_change", args=(object_id,))
+        )
+
+    @action(
+        description="⛔ Stop charging",
+        url_path="stop-charging",
+    )
+    def stop_charging_action(
+            self,
+            request,
+            object_id,
+    ):
+        cp = ChargePoint.objects.get(pk=object_id)
+
+        stop_charging(
+            cp.cp_id,
+            transaction_id=cp.active_transaction_id if hasattr(cp, "active_transaction_id") else 0,
+        )
+
+        return redirect(
+            reverse_lazy("admin:account_chargepoint_change", args=(object_id,))
+        )

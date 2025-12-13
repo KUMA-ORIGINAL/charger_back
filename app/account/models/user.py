@@ -66,3 +66,38 @@ class User(AbstractUser):
     def full_name(self):
         """Общий доход (сумма дохода по ОСАГО и агентов)."""
         return f"{self.last_name} {self.first_name} {self.middle_name}".strip()
+
+
+class ChargePoint(models.Model):
+    """
+    OCPP Charge Point
+    """
+
+    cp_id = models.CharField(
+        primary_key=True,
+        max_length=64,
+        verbose_name=_("Charge Point ID"),
+        help_text=_("ID станции (cp_id в URL WebSocket)"),
+    )
+
+    name = models.CharField(
+        max_length=128,
+        verbose_name=_("Name"),
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_("Created at"),
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name=_("Updated at"),
+    )
+
+    class Meta:
+        verbose_name = _("Charge Point")
+        verbose_name_plural = _("Charge Points")
+
+    def __str__(self):
+        return f"{self.cp_id}"

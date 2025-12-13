@@ -324,8 +324,8 @@ LOGGING = {
 
 
 UNFOLD = {
-    "SITE_TITLE": 'Osago',
-    "SITE_HEADER": "Osago",
+    "SITE_TITLE": 'Charger',
+    "SITE_HEADER": "Charger",
     "SITE_URL": "/",
     "SITE_SYMBOL": "menu",  # symbol from icon set
     "SHOW_HISTORY": True, # show/hide "History" button, default: True
@@ -378,8 +378,14 @@ UNFOLD = {
         "navigation": [
             {
                 "title": _("Пользователи и Доступ"),
-                "collapsible": True,
+                "collapsible": False,
                 "items": [
+                    {
+                        "title": _("Станции"),
+                        "icon": "charger",
+                        "link": reverse_lazy("admin:account_chargepoint_changelist"),
+                        "permission": "account.utils.permission_callback_for_admin",
+                    },
                     {
                         "title": _("Пользователи"),
                         "icon": "person",
