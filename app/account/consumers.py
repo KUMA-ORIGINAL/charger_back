@@ -10,11 +10,17 @@ logger = logging.getLogger("ocpp")
 
 class OCPPConsumer(AsyncWebsocketConsumer):
     """
-    OCPP 1.6 JSON – minimal working CSMS
+    OCPP 1.6 JSON – working CSMS
     """
 
+    # ============================================================
+    # CONNECTION
+    # ============================================================
     async def connect(self):
         self.cp_id = self.scope["url_route"]["kwargs"]["cp_id"]
+
+        # connectorId -> transactionId
+        self.active_transactions = {}
 
         await self.channel_layer.group_add(self.cp_id, self.channel_name)
         logger.info(f"[CONNECT] CP={self.cp_id}")
@@ -26,7 +32,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         logger.info(f"[DISCONNECT] CP={self.cp_id}")
 
     # ============================================================
-    # RECEIVE FROM CHARGE POINT
+    # RECEIVE FROM CP
     # ============================================================
     async def receive(self, text_data=None, bytes_data=None):
         logger.info(f"[RECV] CP={self.cp_id} RAW={text_data}")
@@ -67,17 +73,11 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             "StatusNotification": self.on_status_notification,
             "StartTransaction": self.on_start_transaction,
             "StopTransaction": self.on_stop_transaction,
+            "MeterValues": self.on_meter_values,
         }
 
         handler = handlers.get(action)
-
-        if not handler:
-            logger.warning(
-                f"[WARN] CP={self.cp_id} No handler for {action}"
-            )
-            response_payload = {}
-        else:
-            response_payload = await handler(payload)
+        response_payload = await handler(payload) if handler else {}
 
         response = [3, message_id, response_payload]
 
@@ -104,7 +104,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         )
 
     # ============================================================
-    # HANDLERS (CP → CSMS)
+    # HANDLERS
     # ============================================================
     async def on_boot_notification(self, payload):
         return {
@@ -120,10 +120,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
     async def on_authorize(self, payload):
         id_tag = payload.get("idTag")
-
-        logger.info(
-            f"[AUTHORIZE] CP={self.cp_id} idTag={id_tag}"
-        )
+        logger.info(f"[AUTHORIZE] CP={self.cp_id} idTag={id_tag}")
 
         return {
             "idTagInfo": {
@@ -132,14 +129,22 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         }
 
     async def on_status_notification(self, payload):
-        # Можно сохранять статус коннектора в БД
+        connector_id = payload.get("connectorId")
+        status = payload.get("status")
+
+        logger.info(
+            f"[STATUS] CP={self.cp_id} connector={connector_id} status={status}"
+        )
         return {}
 
     async def on_start_transaction(self, payload):
+        connector_id = payload.get("connectorId")
+
         transaction_id = int(uuid.uuid4().int % 1_000_000)
+        self.active_transactions[connector_id] = transaction_id
 
         logger.info(
-            f"[START] CP={self.cp_id} transactionId={transaction_id}"
+            f"[START] CP={self.cp_id} connector={connector_id} tx={transaction_id}"
         )
 
         return {
@@ -152,14 +157,32 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     async def on_stop_transaction(self, payload):
         transaction_id = payload.get("transactionId")
 
-        logger.info(
-            f"[STOP] CP={self.cp_id} transactionId={transaction_id}"
-        )
+        # удаляем завершённую транзакцию
+        for c_id, tx_id in list(self.active_transactions.items()):
+            if tx_id == transaction_id:
+                del self.active_transactions[c_id]
 
+        logger.info(
+            f"[STOP] CP={self.cp_id} tx={transaction_id}"
+        )
+        return {}
+
+    async def on_meter_values(self, payload):
+        transaction_id = payload.get("transactionId")
+        meter_values = payload.get("meterValue", [])
+
+        for entry in meter_values:
+            ts = entry.get("timestamp")
+            for sv in entry.get("sampledValue", []):
+                logger.info(
+                    f"[METER] CP={self.cp_id} TX={transaction_id} "
+                    f"{sv.get('measurand')}={sv.get('value')} {sv.get('unit')} "
+                    f"context={sv.get('context')}"
+                )
         return {}
 
     # ============================================================
-    # SEND FROM CSMS → CP
+    # SEND CSMS → CP
     # ============================================================
     async def send_ocpp(self, event):
         frame = [
