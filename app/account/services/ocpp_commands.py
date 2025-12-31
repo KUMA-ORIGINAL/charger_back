@@ -20,12 +20,10 @@ def ocpp_call(cp_id: str, action: str, payload: dict):
 def start_charging(cp_id, connector_id=1):
     ocpp_call(
         cp_id,
-        "StartTransaction",
+        "RemoteStartTransaction",
         {
             "connectorId": connector_id,
             "idTag": "ADMIN",
-            "meterStart": 0,
-            "timestamp": "2025-01-01T00:00:00Z",
         },
     )
 
@@ -33,9 +31,8 @@ def start_charging(cp_id, connector_id=1):
 def stop_charging(cp_id, transaction_id):
     ocpp_call(
         cp_id,
-        "StopTransaction",
+        "RemoteStopTransaction",
         {
             "transactionId": transaction_id,
-            "timestamp": "2025-01-01T00:00:00Z",
         },
     )
