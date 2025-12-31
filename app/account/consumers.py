@@ -3,7 +3,10 @@ import uuid
 import logging
 from datetime import datetime, timezone
 
+from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+
+from account.models import ChargePoint
 
 logger = logging.getLogger("ocpp")
 
@@ -141,11 +144,15 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         connector_id = payload.get("connectorId")
 
         transaction_id = int(uuid.uuid4().int % 1_000_000)
-        self.active_transactions[connector_id] = transaction_id
 
         logger.info(
             f"[START] CP={self.cp_id} connector={connector_id} tx={transaction_id}"
         )
+
+        # 🔥 СОХРАНЯЕМ В БД
+        await database_sync_to_async(
+            ChargePoint.objects.filter(cp_id=self.cp_id).update
+        )(active_transaction_id=transaction_id)
 
         return {
             "transactionId": transaction_id,
@@ -157,14 +164,12 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     async def on_stop_transaction(self, payload):
         transaction_id = payload.get("transactionId")
 
-        # удаляем завершённую транзакцию
-        for c_id, tx_id in list(self.active_transactions.items()):
-            if tx_id == transaction_id:
-                del self.active_transactions[c_id]
+        logger.info(f"[STOP] CP={self.cp_id} tx={transaction_id}")
 
-        logger.info(
-            f"[STOP] CP={self.cp_id} tx={transaction_id}"
-        )
+        await database_sync_to_async(
+            ChargePoint.objects.filter(cp_id=self.cp_id).update
+        )(active_transaction_id=None)
+
         return {}
 
     async def on_meter_values(self, payload):

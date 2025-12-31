@@ -85,6 +85,13 @@ class ChargePoint(models.Model):
         verbose_name=_("Name"),
     )
 
+    active_transaction_id = models.IntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("Active transaction ID"),
+        help_text=_("Последний активный OCPP transactionId"),
+    )
+
     created_at = models.DateTimeField(
         auto_now_add=True,
         verbose_name=_("Created at"),

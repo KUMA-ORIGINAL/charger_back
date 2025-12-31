@@ -1,4 +1,4 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin, GroupAdmin
 from django.contrib.auth.models import Group
 from django.shortcuts import redirect
@@ -101,11 +101,19 @@ class ChargePointAdmin(BaseModelAdmin):
     ):
         cp = ChargePoint.objects.get(pk=object_id)
 
+        if not cp.active_transaction_id:
+            messages.warning(
+                request,
+                "Нет активной транзакции — остановка невозможна"
+            )
+            return redirect(
+                reverse_lazy("admin:account_chargepoint_change", args=(object_id,))
+            )
+
         stop_charging(
             cp.cp_id,
-            transaction_id=cp.active_transaction_id if hasattr(cp, "active_transaction_id") else 0,
+            transaction_id=cp.active_transaction_id,
         )
-
         return redirect(
             reverse_lazy("admin:account_chargepoint_change", args=(object_id,))
         )
