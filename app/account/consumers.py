@@ -1,6 +1,7 @@
 import json
 import uuid
 import logging
+from datetime import datetime, timezone
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 
@@ -9,29 +10,24 @@ logger = logging.getLogger("ocpp")
 
 class OCPPConsumer(AsyncWebsocketConsumer):
     """
-    OCPP 1.6 JSON
+    OCPP 1.6 JSON – minimal working CSMS
     """
 
     async def connect(self):
         self.cp_id = self.scope["url_route"]["kwargs"]["cp_id"]
 
-        # group = конкретная станция
-        await self.channel_layer.group_add(
-            self.cp_id,
-            self.channel_name
-        )
-
+        await self.channel_layer.group_add(self.cp_id, self.channel_name)
         logger.info(f"[CONNECT] CP={self.cp_id}")
+
         await self.accept()
 
     async def disconnect(self, close_code):
-        await self.channel_layer.group_discard(
-            self.cp_id,
-            self.channel_name
-        )
+        await self.channel_layer.group_discard(self.cp_id, self.channel_name)
         logger.info(f"[DISCONNECT] CP={self.cp_id}")
 
-    # ======== ПРИЁМ ОТ СТАНЦИИ ========
+    # ============================================================
+    # RECEIVE FROM CHARGE POINT
+    # ============================================================
     async def receive(self, text_data=None, bytes_data=None):
         logger.info(f"[RECV] CP={self.cp_id} RAW={text_data}")
 
@@ -45,85 +41,126 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             logger.warning(f"[WARN] CP={self.cp_id} Invalid frame")
             return
 
-        message_type = frame[0]
+        msg_type = frame[0]
 
-        # CALL (запрос от станции)
-        if message_type == 2:
-            await self.handle_call(frame)
+        if msg_type == 2:
+            await self._handle_call(frame)
+        elif msg_type == 3:
+            await self._handle_call_result(frame)
+        elif msg_type == 4:
+            await self._handle_call_error(frame)
 
-        # CALLRESULT (ответ на нашу команду)
-        elif message_type == 3:
-            await self.handle_call_result(frame)
-
-        # CALLERROR
-        elif message_type == 4:
-            await self.handle_call_error(frame)
-
-    # ======== CALL ========
-    async def handle_call(self, frame):
+    # ============================================================
+    # CALL (CP → CSMS)
+    # ============================================================
+    async def _handle_call(self, frame):
         _, message_id, action, payload = frame
 
         logger.info(
             f"[CALL] CP={self.cp_id} ACTION={action} PAYLOAD={payload}"
         )
 
-        # Заглушки ответов
         handlers = {
             "BootNotification": self.on_boot_notification,
             "Heartbeat": self.on_heartbeat,
+            "Authorize": self.on_authorize,
+            "StatusNotification": self.on_status_notification,
             "StartTransaction": self.on_start_transaction,
             "StopTransaction": self.on_stop_transaction,
         }
 
         handler = handlers.get(action)
-        if handler:
-            response_payload = await handler(payload)
-        else:
+
+        if not handler:
+            logger.warning(
+                f"[WARN] CP={self.cp_id} No handler for {action}"
+            )
             response_payload = {}
+        else:
+            response_payload = await handler(payload)
 
         response = [3, message_id, response_payload]
 
         logger.info(f"[SEND] CP={self.cp_id} CALLRESULT={response}")
         await self.send(text_data=json.dumps(response))
 
-    # ======== CALLRESULT ========
-    async def handle_call_result(self, frame):
+    # ============================================================
+    # CALLRESULT (CP → CSMS)
+    # ============================================================
+    async def _handle_call_result(self, frame):
         _, message_id, payload = frame
         logger.info(
             f"[CALLRESULT] CP={self.cp_id} MSG_ID={message_id} PAYLOAD={payload}"
         )
 
-    # ======== CALLERROR ========
-    async def handle_call_error(self, frame):
+    # ============================================================
+    # CALLERROR
+    # ============================================================
+    async def _handle_call_error(self, frame):
         _, message_id, error_code, error_desc, details = frame
         logger.error(
             f"[CALLERROR] CP={self.cp_id} MSG_ID={message_id} "
-            f"CODE={error_code} DESC={error_desc}"
+            f"CODE={error_code} DESC={error_desc} DETAILS={details}"
         )
 
-    # ======== HANDLERS ========
+    # ============================================================
+    # HANDLERS (CP → CSMS)
+    # ============================================================
     async def on_boot_notification(self, payload):
         return {
-            "currentTime": "2025-01-01T00:00:00Z",
+            "currentTime": self._now(),
             "interval": 30,
             "status": "Accepted",
         }
 
     async def on_heartbeat(self, payload):
         return {
-            "currentTime": "2025-01-01T00:00:00Z",
+            "currentTime": self._now(),
         }
 
-    async def on_start_transaction(self, payload):
+    async def on_authorize(self, payload):
+        id_tag = payload.get("idTag")
+
+        logger.info(
+            f"[AUTHORIZE] CP={self.cp_id} idTag={id_tag}"
+        )
+
         return {
-            "transactionId": 1001,
-            "idTagInfo": {"status": "Accepted"},
+            "idTagInfo": {
+                "status": "Accepted"
+            }
+        }
+
+    async def on_status_notification(self, payload):
+        # Можно сохранять статус коннектора в БД
+        return {}
+
+    async def on_start_transaction(self, payload):
+        transaction_id = int(uuid.uuid4().int % 1_000_000)
+
+        logger.info(
+            f"[START] CP={self.cp_id} transactionId={transaction_id}"
+        )
+
+        return {
+            "transactionId": transaction_id,
+            "idTagInfo": {
+                "status": "Accepted"
+            },
         }
 
     async def on_stop_transaction(self, payload):
+        transaction_id = payload.get("transactionId")
+
+        logger.info(
+            f"[STOP] CP={self.cp_id} transactionId={transaction_id}"
+        )
+
         return {}
 
-    # ======== ОТПРАВКА КОМАНД ========
+    # ============================================================
+    # SEND FROM CSMS → CP
+    # ============================================================
     async def send_ocpp(self, event):
         frame = [
             2,
@@ -134,3 +171,10 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         logger.info(f"[SEND] CP={self.cp_id} CALL={frame}")
         await self.send(text_data=json.dumps(frame))
+
+    # ============================================================
+    # UTILS
+    # ============================================================
+    @staticmethod
+    def _now():
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
