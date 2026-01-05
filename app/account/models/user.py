@@ -80,6 +80,14 @@ class ChargePoint(models.Model):
         help_text=_("ID станции (cp_id в URL WebSocket)"),
     )
 
+    charge24_cp_id = models.CharField(
+        max_length=64,
+        blank=True,
+        null=True,
+        verbose_name=_("Charge24 CP ID"),
+        help_text=_("ID станции в системе Charge24"),
+    )
+
     name = models.CharField(
         max_length=128,
         verbose_name=_("Name"),
