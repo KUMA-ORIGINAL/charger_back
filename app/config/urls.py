@@ -33,6 +33,7 @@ urlpatterns = [
     path('api/health/', views.health_check, name='health_check'),
 
     path('api/', include('account.api_urls')),
+    path('api/', include('payments.urls')),
 ]
 
 if settings.DEBUG:

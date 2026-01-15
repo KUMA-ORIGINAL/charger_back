@@ -32,3 +32,4 @@ pygments==2.19
 sentry-sdk[django]==2.26.1
 django-import-export==4.3.7
 openpyxl==3.1.5
+qrcode==8.2

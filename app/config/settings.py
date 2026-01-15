@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     "import_export",
 
     'account',
+    'payments',
 ]
 
 MIDDLEWARE = [
@@ -385,6 +386,11 @@ UNFOLD = {
                         "icon": "charger",
                         "link": reverse_lazy("admin:account_chargepoint_changelist"),
                         "permission": "account.utils.permission_callback_for_admin",
+                    },
+                    {
+                        "title": _("QR‑платежи"),
+                        "icon": "qr_code",
+                        "link": reverse_lazy("admin:payments_qrpayment_changelist"),
                     },
                     {
                         "title": _("Пользователи"),
