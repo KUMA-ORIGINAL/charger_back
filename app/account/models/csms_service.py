@@ -34,12 +34,6 @@ class CSMSService(BaseModel):
         max_length=255,
         verbose_name="WebSocket URL шаблон",
         help_text="Пример: wss://charge24.app/c/{cp_id}",
-        validators=[
-            RegexValidator(
-                regex=r"^wss:\/\/.+\{cp_id\}.+",
-                message="URL должен быть wss:// и содержать {cp_id}",
-            )
-        ],
     )
 
     class Meta:
