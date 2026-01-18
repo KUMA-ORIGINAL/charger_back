@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from pprint import pformat
 
 from django.db import transaction
@@ -6,7 +7,7 @@ from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from account.models import ChargePoint
+from account.models import ChargePoint, ChargingSession
 from payments.models import QRPayment
 
 logger = logging.getLogger(__name__)
@@ -35,9 +36,7 @@ class QRPaymentWebhookView(APIView):
         bank_id = data.get("id")
         merchant_service_id = str(data.get("qr_merchant_service", ""))
 
-        # ------------------------------------------
         # Валидация
-        # ------------------------------------------
         if not all([status, amount, bank_id, merchant_service_id]):
             logger.warning("Webhook: недостаточно данных")
             return Response({"error": "Недостаточно данных"}, status=400)
@@ -46,18 +45,14 @@ class QRPaymentWebhookView(APIView):
             logger.error("Webhook: некорректный merchant_service_id=%s", merchant_service_id)
             return Response({"error": "Некорректный merchant_service_id"}, status=200)
 
-        # ------------------------------------------
         # Парсим charge_point_id
-        # ------------------------------------------
         try:
             charge_point_id = int(merchant_service_id[3:])
         except ValueError:
             logger.exception("Webhook: ошибка парсинга charge_point_id")
             return Response({"error": "Некорректный ID станции"}, status=200)
 
-        # ------------------------------------------
         # ChargePoint
-        # ------------------------------------------
         try:
             charge_point = ChargePoint.objects.get(pk=charge_point_id)
         except ChargePoint.DoesNotExist:
@@ -66,9 +61,7 @@ class QRPaymentWebhookView(APIView):
 
         local_status = BANK_TO_LOCAL_STATUS.get(str(status).upper(), "failed")
 
-        # ------------------------------------------
-        # Сохраняем платеж (idempotent)
-        # ------------------------------------------
+        # Сохраняем платеж и создаем сессию
         with transaction.atomic():
             payment, created = QRPayment.objects.select_for_update().get_or_create(
                 bank_id=bank_id,
@@ -86,6 +79,25 @@ class QRPaymentWebhookView(APIView):
 
             if local_status == "success" and not payment.paid_at:
                 payment.paid_at = timezone.now()
+
+                # Создаем сессию зарядки
+                session = ChargingSession.objects.create(
+                    charge_point=charge_point,
+                    status='preparing',
+                    initial_balance=Decimal(amount),
+                    cost_per_kwh=Decimal('12.00'),
+                )
+
+                payment.charging_session = session
+
+                # Помечаем станцию как занятую
+                charge_point.is_occupied = True
+                charge_point.save()
+
+                logger.info(
+                    f"[CHARGING SESSION CREATED] Session {session.id} | "
+                    f"Balance: {session.initial_balance} som"
+                )
 
             payment.save()
 

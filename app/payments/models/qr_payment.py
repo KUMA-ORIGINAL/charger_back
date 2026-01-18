@@ -22,6 +22,13 @@ class QRPayment(BaseModel):
         on_delete=models.CASCADE,
         related_name="qr_payments",
     )
+    charging_session = models.ForeignKey(
+        'account.ChargingSession',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
     link = models.URLField("Ссылка на оплату", blank=True, null=True)
     amount = models.DecimalField("Сумма", max_digits=10, decimal_places=2)
     status = models.CharField(

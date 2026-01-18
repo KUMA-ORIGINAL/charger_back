@@ -388,6 +388,18 @@ UNFOLD = {
                         "permission": "account.utils.permission_callback_for_admin",
                     },
                     {
+                        "title": _("CSMS сервисы"),
+                        "icon": "cloud",
+                        "link": reverse_lazy("admin:account_csmsservice_changelist"),
+                        "permission": "account.utils.permission_callback_for_admin",
+                    },
+                    {
+                        "title": _("Сессии зарядки"),
+                        "icon": "bolt",
+                        "link": reverse_lazy("admin:account_chargingsession_changelist"),
+                        "permission": "account.utils.permission_callback_for_admin",
+                    },
+                    {
                         "title": _("QR‑платежи"),
                         "icon": "qr_code",
                         "link": reverse_lazy("admin:payments_qrpayment_changelist"),

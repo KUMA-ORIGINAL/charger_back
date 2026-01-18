@@ -6,10 +6,11 @@ from django.contrib import admin, messages
 from django.http import HttpResponse
 from django.shortcuts import redirect, get_object_or_404
 from django.urls import reverse_lazy, reverse
+from unfold.admin import TabularInline
 
 from unfold.decorators import action
 
-from ..models import ChargePoint
+from ..models import ChargePoint, ChargePointCSMS
 from common.base_admin import BaseModelAdmin
 
 from ..services.ocpp_commands import start_charging, stop_charging
@@ -19,12 +20,19 @@ from ..services.payment_qr_generator import build_payment_qr_link_without_amount
 logger = logging.getLogger(__name__)
 
 
+class ChargePointCSMSInline(TabularInline):
+    model = ChargePointCSMS
+    extra = 1
+
+
 @admin.register(ChargePoint)
 class ChargePointAdmin(BaseModelAdmin):
-    list_display = ("cp_id", "name", 'detail_link')
+    list_display = ("cp_id", "name", 'is_occupied', 'detail_link')
     readonly_fields = ("created_at", "updated_at",)
 
-    actions_detail = ('start_charging_action', 'stop_charging_action', 'download_qrcode')
+    inlines = [ChargePointCSMSInline]
+
+    actions_detail = ('download_qrcode',)
 
     @action(
         description="Скачать QR-код для оплаты",

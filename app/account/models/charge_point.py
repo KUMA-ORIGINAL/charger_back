@@ -1,8 +1,10 @@
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
+from common.base_model import BaseModel
 
-class ChargePoint(models.Model):
+
+class ChargePoint(BaseModel):
     """
     OCPP Charge Point
     """
@@ -35,15 +37,7 @@ class ChargePoint(models.Model):
 
     payment_qr_link = models.URLField("QR ссылка для оплаты", max_length=2000, blank=True, null=True)
 
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-        verbose_name=_("Created at"),
-    )
-
-    updated_at = models.DateTimeField(
-        auto_now=True,
-        verbose_name=_("Updated at"),
-    )
+    is_occupied = models.BooleanField(default=False)
 
     class Meta:
         verbose_name = _("Charge Point")
