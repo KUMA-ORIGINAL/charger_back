@@ -498,22 +498,21 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
     async def receive(self, text_data=None, bytes_data=None):
         logger.info(f"[STATION → PROXY] {text_data}")
-
         try:
             msg = json.loads(text_data)
         except json.JSONDecodeError:
             return
 
-        # Обрабатываем Call от станции
+        # обрабатываем входящие Call/Result как раньше
         if msg[0] == 2:
             await self._handle_station_call(msg)
-
-        # Обрабатываем CallResult (ответы станции)
         elif msg[0] == 3:
             await self._handle_station_response(msg)
 
-        # Пересылаем всем CSMS без дополнительных проверок
-        await self._forward_to_all_csms(text_data)
+        # Пропускаем свои сообщения при ретрансляции наружу
+        if isinstance(msg[1], str) and msg[1].startswith("local_"):
+            return  # ← не пересылаем
+        await self._forward_to_all_csms(text_data)  # остальное – CSMS
 
     async def _handle_station_call(self, msg):
         action = msg[2]
@@ -700,37 +699,26 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 logger.error(f"[MONITOR ERROR] {e}")
 
     async def _send_remote_start(self):
-        """Отправляет RemoteStartTransaction напрямую станции"""
         if not self.active_session:
             return
-
         msg = [
             2,
-            f"remote_start_{int(datetime.now().timestamp())}",
+            f"local_start_{int(datetime.now().timestamp())}",  # ← префикс
             "RemoteStartTransaction",
-            {
-                "connectorId": 1,
-                "idTag": f"payment_{self.active_session.id}"
-            }
+            {"connectorId": 1, "idTag": f"payment_{self.active_session.id}"}
         ]
-
         logger.info(f"[SENDING REMOTE START] session={self.active_session.id} → STATION")
-
-        # Отправляем НАПРЯМУЮ станции (не через CSMS)
         await self.send(text_data=json.dumps(msg))
 
     async def _stop_charging(self):
-        if not self.active_session or not self.active_session.transaction_id:
-            return
-
+        ...
         msg = [
             2,
-            f"remote_stop_{int(datetime.now().timestamp())}",
+            f"local_stop_{int(datetime.now().timestamp())}",
             "RemoteStopTransaction",
             {"transactionId": self.active_session.transaction_id},
         ]
-
-        await self._forward_to_all_csms(json.dumps(msg))
+        await self.send(json.dumps(msg))
 
     # ============================================================
     # FORWARDING
