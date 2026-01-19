@@ -508,6 +508,10 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         if msg[0] == 2:
             await self._handle_station_call(msg)
 
+        # Обрабатываем CallResult (ответы станции)
+        elif msg[0] == 3:
+            await self._handle_station_response(msg)
+
         # Пересылаем всем CSMS без дополнительных проверок
         await self._forward_to_all_csms(text_data)
 
@@ -526,6 +530,27 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         elif action == "StopTransaction":
             await self._on_transaction_stopped(payload)
+
+    async def _handle_station_response(self, msg):
+        """Обрабатывает CallResult от станции"""
+        message_id = msg[1]
+        payload = msg[2]
+
+        # Проверяем ответ на RemoteStartTransaction
+        if message_id.startswith("remote_start_"):
+            status = payload.get("status")
+            logger.info(f"[REMOTE START RESPONSE] status={status}")
+
+            if status == "Accepted":
+                logger.info(f"[REMOTE START ACCEPTED] session={self.active_session.id}")
+            elif status == "Rejected":
+                logger.warning(f"[REMOTE START REJECTED] session={self.active_session.id}")
+                # Можно сбросить сессию или повторить попытку
+
+        # Проверяем ответ на RemoteStopTransaction
+        elif message_id.startswith("remote_stop_"):
+            status = payload.get("status")
+            logger.info(f"[REMOTE STOP RESPONSE] status={status}")
 
     # ============================================================
     # STATUS / METER
@@ -675,7 +700,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 logger.error(f"[MONITOR ERROR] {e}")
 
     async def _send_remote_start(self):
-        """Отправляет RemoteStartTransaction для текущей сессии"""
+        """Отправляет RemoteStartTransaction напрямую станции"""
         if not self.active_session:
             return
 
@@ -689,8 +714,10 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             }
         ]
 
-        logger.info(f"[SENDING REMOTE START] session={self.active_session.id}")
-        await self._forward_to_all_csms(json.dumps(msg))
+        logger.info(f"[SENDING REMOTE START] session={self.active_session.id} → STATION")
+
+        # Отправляем НАПРЯМУЮ станции (не через CSMS)
+        await self.send(text_data=json.dumps(msg))
 
     async def _stop_charging(self):
         if not self.active_session or not self.active_session.transaction_id:
