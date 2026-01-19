@@ -320,7 +320,6 @@
 #     @staticmethod
 #     def _now():
 #         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
 import logging
 import asyncio
 import json
@@ -384,7 +383,9 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             return
 
         self.active_session = await self._get_active_session()
-        self.monitoring_task = asyncio.create_task(self._monitor_billing())
+
+        # 🔥 Запускаем мониторинг оплаты (проверяет каждые 2 сек)
+        self.monitoring_task = asyncio.create_task(self._monitor_session())
 
         await self.accept(subprotocol="ocpp1.6")
 
@@ -538,6 +539,11 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         if status == "Preparing":
             self.active_session = await self._get_active_session()
 
+            # 🔥 АВТОСТАРТ: если есть оплаченная сессия
+            if self.active_session and self.active_session.status == "preparing":
+                logger.info(f"[AUTO START] Triggering RemoteStart for session={self.active_session.id}")
+                await self._send_remote_start()
+
         # НЕ сбрасываем is_occupied здесь!
         # Флаг сбрасывается только в StopTransaction
 
@@ -605,7 +611,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             logger.info(f"[EXTERNAL TRANSACTION STOPPED] tx={transaction_id}")
 
     # ============================================================
-    # BILLING
+    # BILLING & MONITORING
     # ============================================================
 
     async def _update_session_consumption(self, meter_wh):
@@ -631,12 +637,30 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             )
             self.active_session = None
 
-    async def _monitor_billing(self):
+    async def _monitor_session(self):
+        """Мониторинг: проверяет оплату и баланс"""
         while True:
             try:
-                await asyncio.sleep(5)
+                await asyncio.sleep(2)
 
-                if self.active_session and self.active_session.status == "charging":
+                # Проверяем появление новой оплаченной сессии
+                if not self.active_session:
+                    self.active_session = await self._get_active_session()
+
+                    if self.active_session:
+                        logger.info(
+                            f"[NEW SESSION DETECTED] session={self.active_session.id} "
+                            f"status={self.active_session.status}"
+                        )
+
+                        # Если станция уже готова (Preparing) - стартуем сразу
+                        if self.active_session.status == "preparing":
+                            if not await self._is_station_occupied():
+                                logger.info(f"[AUTO START] Station ready, starting session={self.active_session.id}")
+                                await self._send_remote_start()
+
+                # Проверяем баланс во время зарядки
+                elif self.active_session.status == "charging":
                     self.active_session = await self._get_active_session()
 
                     if self.active_session and not self.active_session.can_continue_charging:
@@ -649,6 +673,24 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 break
             except Exception as e:
                 logger.error(f"[MONITOR ERROR] {e}")
+
+    async def _send_remote_start(self):
+        """Отправляет RemoteStartTransaction для текущей сессии"""
+        if not self.active_session:
+            return
+
+        msg = [
+            2,
+            f"remote_start_{int(datetime.now().timestamp())}",
+            "RemoteStartTransaction",
+            {
+                "connectorId": 1,
+                "idTag": f"payment_{self.active_session.id}"
+            }
+        ]
+
+        logger.info(f"[SENDING REMOTE START] session={self.active_session.id}")
+        await self._forward_to_all_csms(json.dumps(msg))
 
     async def _stop_charging(self):
         if not self.active_session or not self.active_session.transaction_id:
