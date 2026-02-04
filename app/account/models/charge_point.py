@@ -38,6 +38,7 @@ class ChargePoint(BaseModel):
     payment_qr_link = models.URLField("QR ссылка для оплаты", max_length=2000, blank=True, null=True)
 
     is_occupied = models.BooleanField(default=False)
+    occupied_by = models.CharField(max_length=100, null=True, blank=True)
 
     class Meta:
         verbose_name = _("Charge Point")
