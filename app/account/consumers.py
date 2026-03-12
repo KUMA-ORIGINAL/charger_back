@@ -275,7 +275,16 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         # don't leak our payment Authorize to CSMS
         if action == "Authorize":
-            if payload.get("idTag", "").startswith("payment_"):
+            id_tag = payload.get("idTag", "")
+            if id_tag.startswith("payment_"):
+                return
+            # External session: route Authorize only to the CSMS that
+            # initiated RemoteStartTransaction to avoid conflicting verdicts.
+            if (
+                self.initiating_csms
+                and self.initiating_csms in self.remote_connections
+            ):
+                await self._send_to_csms(self.initiating_csms, raw)
                 return
 
         # transaction-specific messages → only to initiating CSMS
