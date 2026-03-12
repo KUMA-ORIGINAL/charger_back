@@ -28,13 +28,16 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     Station Result → route back to the originating CSMS
     CSMS   Result → store txId mapping (StartTransaction), log, discard
     """
+    CSMS_SYNC_INTERVAL = 5
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
         # --- CSMS connections ---
         self.remote_connections: dict = {}   # csms_name → websocket
-        self.remote_tasks: list = []
+        self.remote_tasks: dict = {}         # csms_name → listen task
+        self.remote_urls: dict = {}          # csms_name → current ws url
+        self.csms_sync_task = None
 
         # --- message routing ---
         self.pending_calls: dict = {}        # msg_id → csms_name  (CSMS→station)
@@ -94,6 +97,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         # --- background tasks ---
         self.monitoring_task = asyncio.create_task(self._monitor_session())
+        self.csms_sync_task = asyncio.create_task(self._sync_csms_loop())
 
         # --- channel layer (for admin/API commands) ---
         await self.channel_layer.group_add(self.cp_id, self.channel_name)
@@ -106,15 +110,11 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, close_code):
         if self.monitoring_task:
             self.monitoring_task.cancel()
+        if self.csms_sync_task:
+            self.csms_sync_task.cancel()
 
-        for task in self.remote_tasks:
-            task.cancel()
-
-        for name, ws in self.remote_connections.items():
-            try:
-                await ws.close()
-            except Exception:
-                pass
+        for csms_name in list(self.remote_connections):
+            await self._disconnect_csms(csms_name, reason="consumer disconnect")
 
         if hasattr(self, "cp_id"):
             await self.channel_layer.group_discard(self.cp_id, self.channel_name)
@@ -149,6 +149,10 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
     async def _connect_to_csms(self, cfg: dict):
         name, url = cfg["name"], cfg["url"]
+
+        if name in self.remote_connections:
+            return
+
         try:
             ws = await websockets.connect(
                 url,
@@ -158,10 +162,66 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             )
             self.remote_connections[name] = ws
             task = asyncio.create_task(self._listen_csms(name, ws))
-            self.remote_tasks.append(task)
+            self.remote_tasks[name] = task
+            self.remote_urls[name] = url
             logger.info(f"[CSMS OK] {name} url={url}")
         except Exception as exc:
             logger.error(f"[CSMS FAIL] {name} url={url}: {exc}")
+
+    async def _disconnect_csms(self, csms_name: str, reason: str = ""):
+        ws = self.remote_connections.pop(csms_name, None)
+        task = self.remote_tasks.pop(csms_name, None)
+        self.remote_urls.pop(csms_name, None)
+        self.csms_tx_ids.pop(csms_name, None)
+        if self.initiating_csms == csms_name:
+            self.initiating_csms = None
+
+        if task and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+
+        if ws:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+        if reason:
+            logger.info(f"[CSMS OFF] {csms_name} ({reason})")
+
+    async def _sync_csms_loop(self):
+        while True:
+            try:
+                await asyncio.sleep(self.CSMS_SYNC_INTERVAL)
+                await self._sync_csms_connections()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error(f"[CSMS SYNC ERROR] CP={self.cp_id} {exc}")
+
+    async def _sync_csms_connections(self):
+        configs = await self._get_csms_configs()
+        desired = {cfg["name"]: cfg["url"] for cfg in configs}
+
+        # add new services or reconnect changed endpoints
+        for name, url in desired.items():
+            if name not in self.remote_connections:
+                await self._connect_to_csms({"name": name, "url": url})
+                continue
+
+            if self.remote_urls.get(name) != url:
+                await self._disconnect_csms(name, reason="config changed")
+                await self._connect_to_csms({"name": name, "url": url})
+
+        # remove disabled/unlinked services
+        for name in list(self.remote_connections):
+            if name not in desired:
+                await self._disconnect_csms(name, reason="removed from config")
 
     # ================================================================
     #  RECEIVE FROM STATION
@@ -380,6 +440,13 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             logger.warning(f"[CSMS CLOSED] {csms_name}: {exc}")
         except Exception as exc:
             logger.error(f"[CSMS ERR] {csms_name}: {exc}")
+        finally:
+            # keep internal maps consistent when a remote socket dies
+            if self.remote_connections.get(csms_name) is ws:
+                self.remote_connections.pop(csms_name, None)
+                self.remote_urls.pop(csms_name, None)
+            if self.remote_tasks.get(csms_name) is asyncio.current_task():
+                self.remote_tasks.pop(csms_name, None)
 
     # ================================================================
     #  CSMS CALL  (csms → proxy → station)
