@@ -460,8 +460,11 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         # --- access control for start / stop ---
         if action in ("RemoteStartTransaction", "RemoteStopTransaction"):
             if not self._is_command_allowed(csms_name, action):
-                err = [4, message_id, "GenericError", "Station occupied", {}]
-                await self._send_to_csms(csms_name, json.dumps(err))
+                # Business-level refusal: return normal CallResult Rejected
+                # so external CSMS treats it as a command outcome, not a
+                # transport/protocol exception.
+                result = [3, message_id, {"status": "Rejected"}]
+                await self._send_to_csms(csms_name, json.dumps(result))
                 logger.warning(
                     f"[BLOCKED] {csms_name} {action} "
                     f"(occupied_by={self.occupied_by})"

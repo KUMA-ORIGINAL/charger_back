@@ -236,11 +236,10 @@ class OCPPConsumerTests(TransactionTestCase):
                 ]
             )
             await self._wait_for(
-                lambda: any(f[0] == 4 and f[1] == "remote-start-b" for f in ws_b.sent)
+                lambda: any(f[0] == 3 and f[1] == "remote-start-b" for f in ws_b.sent)
             )
-            blocked = [f for f in ws_b.sent if f[0] == 4 and f[1] == "remote-start-b"][0]
-            self.assertEqual(blocked[2], "GenericError")
-            self.assertEqual(blocked[3], "Station occupied")
+            blocked = [f for f in ws_b.sent if f[0] == 3 and f[1] == "remote-start-b"][0]
+            self.assertEqual(blocked[2], {"status": "Rejected"})
 
             await communicator.disconnect()
 
