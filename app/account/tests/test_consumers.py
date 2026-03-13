@@ -296,3 +296,104 @@ class OCPPConsumerTests(TransactionTestCase):
             self.assertEqual(a_count_before, a_count_after)
 
             await communicator.disconnect()
+
+    async def test_paid_session_hides_station_as_no_connection(self):
+        factory = FakeWebsocketsFactory()
+
+        with (
+            patch("account.consumers.websockets.connect", new=factory.connect),
+            patch.object(OCPPConsumer, "CSMS_SYNC_INTERVAL", 0.05),
+        ):
+            communicator = WebsocketCommunicator(self.app, "/ws/ocpp/301")
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+
+            ws_a = factory.by_url["ws://mock-a/CP301A"]
+            ws_b = factory.by_url["ws://mock-b/CP301B"]
+
+            # Mark as local paid session.
+            await communicator.send_json_to(
+                [
+                    2,
+                    "start-payment-1",
+                    "StartTransaction",
+                    {
+                        "connectorId": 1,
+                        "idTag": "payment_123",
+                        "meterStart": 0,
+                        "timestamp": datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ"
+                        ),
+                    },
+                ]
+            )
+            start_res = await communicator.receive_json_from()
+            self.assertEqual(start_res[0], 3)
+            self.assertEqual(start_res[1], "start-payment-1")
+
+            # Sync loop should disconnect all CSMS links.
+            await self._wait_for(lambda: ws_a._closed is True and ws_b._closed is True)
+
+            await communicator.disconnect()
+
+    async def test_external_owner_kept_others_hidden_as_no_connection(self):
+        factory = FakeWebsocketsFactory()
+
+        with (
+            patch("account.consumers.websockets.connect", new=factory.connect),
+            patch.object(OCPPConsumer, "CSMS_SYNC_INTERVAL", 0.05),
+        ):
+            communicator = WebsocketCommunicator(self.app, "/ws/ocpp/301")
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+
+            ws_a = factory.by_url["ws://mock-a/CP301A"]
+            ws_b = factory.by_url["ws://mock-b/CP301B"]
+
+            # External flow started by MockA.
+            ws_a.push_incoming(
+                [
+                    2,
+                    "remote-start-owner-a",
+                    "RemoteStartTransaction",
+                    {"connectorId": 1, "idTag": "TAG-A"},
+                ]
+            )
+            forwarded = await communicator.receive_json_from()
+            self.assertEqual(forwarded[1], "remote-start-owner-a")
+            await communicator.send_json_to(
+                [3, "remote-start-owner-a", {"status": "Accepted"}]
+            )
+
+            await communicator.send_json_to(
+                [
+                    2,
+                    "start-ext-1",
+                    "StartTransaction",
+                    {
+                        "connectorId": 1,
+                        "idTag": "TAG-A",
+                        "meterStart": 0,
+                        "timestamp": datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ"
+                        ),
+                    },
+                ]
+            )
+            start_res = await communicator.receive_json_from()
+            self.assertEqual(start_res[0], 3)
+            self.assertEqual(start_res[1], "start-ext-1")
+
+            # Sync loop should keep owner A, disconnect B.
+            await self._wait_for(lambda: ws_b._closed is True)
+            self.assertFalse(ws_a._closed)
+
+            # New station heartbeat should be forwarded to owner only.
+            await communicator.send_json_to([2, "hb-owner-only-1", "Heartbeat", {}])
+            _ = await communicator.receive_json_from()
+            await self._wait_for(
+                lambda: any(f[1] == "hb-owner-only-1" for f in ws_a.sent)
+            )
+            self.assertFalse(any(f[1] == "hb-owner-only-1" for f in ws_b.sent))
+
+            await communicator.disconnect()

@@ -208,8 +208,32 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         configs = await self._get_csms_configs()
         desired = {cfg["name"]: cfg["url"] for cfg in configs}
 
+        # Hide station as "no connection" for non-owners while occupied.
+        # - local payment ("self"): disconnect ALL external CSMS
+        # - external owner (csms_name): keep owner connected, disconnect others
+        if self.occupied_by == "self":
+            for name in list(self.remote_connections):
+                await self._disconnect_csms(
+                    name, reason="hidden during local payment"
+                )
+            return
+        if self.occupied_by and self.occupied_by not in (None, "external"):
+            owner = self.occupied_by
+            for name in list(self.remote_connections):
+                if name != owner:
+                    await self._disconnect_csms(
+                        name, reason=f"hidden while occupied by {owner}"
+                    )
+
         # add new services or reconnect changed endpoints
         for name, url in desired.items():
+            if (
+                self.occupied_by
+                and self.occupied_by not in (None, "external", "self")
+                and name != self.occupied_by
+            ):
+                # while externally occupied, don't reconnect non-owner CSMS
+                continue
             if name not in self.remote_connections:
                 await self._connect_to_csms({"name": name, "url": url})
                 continue
