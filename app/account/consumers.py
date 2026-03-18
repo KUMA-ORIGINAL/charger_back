@@ -43,7 +43,8 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         # --- message routing ---
         self.pending_calls: dict = {}        # msg_id → csms_name  (CSMS→station)
         self.forwarded_calls: dict = {}      # msg_id → {"action"}  (station→CSMS)
-        self.force_accept_stop_ids: set = set()  # custom force-stop message ids
+        # custom force-stop message ids -> source metadata
+        self.force_accept_stop_ids: dict = {}
 
         # --- transaction tracking ---
         self.proxy_tx_id: int | None = None          # txId assigned to station
@@ -426,8 +427,8 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             logger.debug(f"[RESULT] msg={message_id} — no pending CSMS")
             return
 
-        if message_id in self.force_accept_stop_ids:
-            self.force_accept_stop_ids.discard(message_id)
+        force_stop_meta = self.force_accept_stop_ids.pop(message_id, None)
+        if force_stop_meta:
             if payload.get("status") == "Rejected":
                 logger.warning(
                     f"[FORCE STOP RESULT OVERRIDE] msg={message_id} "
@@ -435,6 +436,10 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 )
                 payload = {"status": "Accepted"}
                 frame = [3, message_id, payload]
+                await self._send_synthetic_stop_to_csms(
+                    csms_name=force_stop_meta.get("csms_name", csms_name),
+                    external_tx=force_stop_meta.get("external_tx"),
+                )
 
         logger.info(f"[ST→{csms_name}] result msg={message_id}")
         await self._send_to_csms(csms_name, json.dumps(frame))
@@ -543,7 +548,10 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 )
                 return
             if force_stop_by_external_tx:
-                self.force_accept_stop_ids.add(message_id)
+                self.force_accept_stop_ids[message_id] = {
+                    "csms_name": csms_name,
+                    "external_tx": payload.get("transactionId"),
+                }
                 logger.info(
                     f"[FORCE STOP MAP] {csms_name} external_tx="
                     f"{self.SPARK_FORCE_STOP_TX_ID} -> station_tx={self.proxy_tx_id}"
@@ -690,6 +698,33 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         self.proxy_tx_id = None
         self.csms_tx_ids.clear()
         self.force_accept_stop_ids.clear()
+
+    async def _send_synthetic_stop_to_csms(self, csms_name: str, external_tx):
+        """
+        Send synthetic StopTransaction to external CSMS when force-stop fallback
+        got Rejected from station, so external session can still close cleanly.
+        """
+        if not csms_name or external_tx is None:
+            return
+        payload = {
+            "transactionId": external_tx,
+            "meterStop": 0,
+            "timestamp": self._now(),
+            "reason": "Remote",
+        }
+        if self.initiating_id_tag:
+            payload["idTag"] = self.initiating_id_tag
+        frame = [
+            2,
+            f"proxy_force_stop_{int(datetime.now(timezone.utc).timestamp())}",
+            "StopTransaction",
+            payload,
+        ]
+        logger.warning(
+            f"[FORCE STOP SYNTHETIC] send StopTransaction to {csms_name} "
+            f"tx={external_tx}"
+        )
+        await self._send_to_csms(csms_name, json.dumps(frame))
 
     async def _on_meter_values(self, payload: dict):
         if not self.active_session or self.occupied_by != "self":
