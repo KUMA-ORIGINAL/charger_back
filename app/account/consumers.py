@@ -516,6 +516,14 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         # Idempotency/consistency guard for RemoteStop.
         if action == "RemoteStopTransaction":
+            if self.proxy_tx_id is None and force_stop_by_external_tx:
+                # Custom recovery: if station tx id is unknown, still try stop
+                # with Spark transaction id requested by ops.
+                self.proxy_tx_id = self.SPARK_FORCE_STOP_TX_ID
+                logger.warning(
+                    f"[FORCE STOP FALLBACK] {csms_name} uses external_tx="
+                    f"{self.SPARK_FORCE_STOP_TX_ID} as station tx"
+                )
             if self.proxy_tx_id is None:
                 result = [3, message_id, {"status": "Rejected"}]
                 await self._send_to_csms(csms_name, json.dumps(result))
