@@ -29,6 +29,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     CSMS   Result → store txId mapping (StartTransaction), log, discard
     """
     CSMS_SYNC_INTERVAL = 5
+    SPARK_FORCE_STOP_TX_ID = 3304752
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -486,8 +487,21 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         _, message_id, action, payload = frame
         logger.info(f"[CSMS CALL] {csms_name} {action}")
 
+        force_stop_by_external_tx = (
+            action == "RemoteStopTransaction"
+            and isinstance(payload, dict)
+            and payload.get("transactionId") == self.SPARK_FORCE_STOP_TX_ID
+        )
+
+        # Recovery path: runtime state may be empty after reconnect/restart.
+        if action == "RemoteStopTransaction" and self.proxy_tx_id is None:
+            self.proxy_tx_id = await self._get_active_transaction_id()
+
         # --- access control for start / stop ---
-        if action in ("RemoteStartTransaction", "RemoteStopTransaction"):
+        if (
+            action in ("RemoteStartTransaction", "RemoteStopTransaction")
+            and not force_stop_by_external_tx
+        ):
             if not self._is_command_allowed(csms_name, action):
                 # Business-level refusal: return normal CallResult Rejected
                 # so external CSMS treats it as a command outcome, not a
@@ -500,28 +514,27 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 )
                 return
 
-        # Idempotency/consistency guard: don't forward RemoteStop when there is
-        # no active mapped transaction for this CSMS.
+        # Idempotency/consistency guard for RemoteStop.
         if action == "RemoteStopTransaction":
-            if self.occupied_by != csms_name:
+            if self.proxy_tx_id is None:
                 result = [3, message_id, {"status": "Rejected"}]
                 await self._send_to_csms(csms_name, json.dumps(result))
                 logger.warning(
-                    f"[BLOCKED] {csms_name} {action} "
-                    f"(owner={self.occupied_by})"
+                    f"[BLOCKED] {csms_name} {action} (no active station tx)"
                 )
                 return
-            if self.proxy_tx_id is None or csms_name not in self.csms_tx_ids:
-                result = [3, message_id, {"status": "Rejected"}]
-                await self._send_to_csms(csms_name, json.dumps(result))
-                logger.warning(
-                    f"[BLOCKED] {csms_name} {action} (no active tx mapping)"
+            if force_stop_by_external_tx:
+                logger.info(
+                    f"[FORCE STOP MAP] {csms_name} external_tx="
+                    f"{self.SPARK_FORCE_STOP_TX_ID} -> station_tx={self.proxy_tx_id}"
                 )
-                return
 
         # --- txId rewrite (CSMS → station) ---
-        if action == "RemoteStopTransaction" and csms_name in self.csms_tx_ids:
+        if action == "RemoteStopTransaction":
             payload = self._rewrite_tx_from_csms(csms_name, dict(payload))
+            # Force station-native tx id when known.
+            if self.proxy_tx_id is not None:
+                payload["transactionId"] = self.proxy_tx_id
             frame = [2, message_id, action, payload]
 
         # --- record initiating CSMS ---
@@ -541,8 +554,9 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             return self.occupied_by is None
 
         if action == "RemoteStopTransaction":
-            # allow only the CSMS that owns current session
-            return self.occupied_by == csms_name
+            # Owner can stop; also allow when owner state is unknown and
+            # fallback active_transaction_id exists in DB.
+            return self.occupied_by in (csms_name, None)
 
         return True
 
@@ -855,6 +869,11 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     def _get_charge_point_data(self) -> dict:
         cp = ChargePoint.objects.get(cp_id=self.cp_id)
         return {"is_occupied": cp.is_occupied, "occupied_by": cp.occupied_by}
+
+    @database_sync_to_async
+    def _get_active_transaction_id(self):
+        cp = ChargePoint.objects.get(cp_id=self.cp_id)
+        return cp.active_transaction_id
 
     # ================================================================
     #  UTILS
