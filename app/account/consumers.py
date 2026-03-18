@@ -43,6 +43,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         # --- message routing ---
         self.pending_calls: dict = {}        # msg_id → csms_name  (CSMS→station)
         self.forwarded_calls: dict = {}      # msg_id → {"action"}  (station→CSMS)
+        self.force_accept_stop_ids: set = set()  # custom force-stop message ids
 
         # --- transaction tracking ---
         self.proxy_tx_id: int | None = None          # txId assigned to station
@@ -425,6 +426,16 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             logger.debug(f"[RESULT] msg={message_id} — no pending CSMS")
             return
 
+        if message_id in self.force_accept_stop_ids:
+            self.force_accept_stop_ids.discard(message_id)
+            if payload.get("status") == "Rejected":
+                logger.warning(
+                    f"[FORCE STOP RESULT OVERRIDE] msg={message_id} "
+                    "Rejected -> Accepted"
+                )
+                payload = {"status": "Accepted"}
+                frame = [3, message_id, payload]
+
         logger.info(f"[ST→{csms_name}] result msg={message_id}")
         await self._send_to_csms(csms_name, json.dumps(frame))
 
@@ -532,6 +543,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 )
                 return
             if force_stop_by_external_tx:
+                self.force_accept_stop_ids.add(message_id)
                 logger.info(
                     f"[FORCE STOP MAP] {csms_name} external_tx="
                     f"{self.SPARK_FORCE_STOP_TX_ID} -> station_tx={self.proxy_tx_id}"
@@ -677,6 +689,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         self.initiating_id_tag = None
         self.proxy_tx_id = None
         self.csms_tx_ids.clear()
+        self.force_accept_stop_ids.clear()
 
     async def _on_meter_values(self, payload: dict):
         if not self.active_session or self.occupied_by != "self":
