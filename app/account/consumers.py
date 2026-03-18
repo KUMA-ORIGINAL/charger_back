@@ -47,6 +47,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         self.proxy_tx_id: int | None = None          # txId assigned to station
         self.csms_tx_ids: dict = {}                   # csms_name → csms txId
         self.initiating_csms: str | None = None       # who started current tx
+        self.initiating_id_tag: str | None = None     # owner idTag from CSMS
 
         # --- occupancy ---
         self.occupied_by: str | None = None           # None | "self" | csms_name
@@ -291,6 +292,8 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         # 3) selective forwarding to CSMS
         await self._forward_station_call(frame, action, payload)
+        if action == "StopTransaction":
+            self._clear_transaction_context()
 
     # ---- response generator ----
 
@@ -390,6 +393,8 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                     self.initiating_csms, json.dumps(csms_frame)
                 )
                 return
+            # Never broadcast transaction-specific frames when owner is unknown.
+            return
 
         # everything else → broadcast to all CSMS
         for csms_name in list(self.remote_connections):
@@ -495,6 +500,25 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 )
                 return
 
+        # Idempotency/consistency guard: don't forward RemoteStop when there is
+        # no active mapped transaction for this CSMS.
+        if action == "RemoteStopTransaction":
+            if self.occupied_by != csms_name:
+                result = [3, message_id, {"status": "Rejected"}]
+                await self._send_to_csms(csms_name, json.dumps(result))
+                logger.warning(
+                    f"[BLOCKED] {csms_name} {action} "
+                    f"(owner={self.occupied_by})"
+                )
+                return
+            if self.proxy_tx_id is None or csms_name not in self.csms_tx_ids:
+                result = [3, message_id, {"status": "Rejected"}]
+                await self._send_to_csms(csms_name, json.dumps(result))
+                logger.warning(
+                    f"[BLOCKED] {csms_name} {action} (no active tx mapping)"
+                )
+                return
+
         # --- txId rewrite (CSMS → station) ---
         if action == "RemoteStopTransaction" and csms_name in self.csms_tx_ids:
             payload = self._rewrite_tx_from_csms(csms_name, dict(payload))
@@ -503,6 +527,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         # --- record initiating CSMS ---
         if action == "RemoteStartTransaction":
             self.initiating_csms = csms_name
+            self.initiating_id_tag = payload.get("idTag")
 
         # --- track for response routing ---
         self.pending_calls[message_id] = csms_name
@@ -516,8 +541,8 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             return self.occupied_by is None
 
         if action == "RemoteStopTransaction":
-            # allow the CSMS that started, or if already free
-            return self.occupied_by in (csms_name, None)
+            # allow only the CSMS that owns current session
+            return self.occupied_by == csms_name
 
         return True
 
@@ -565,6 +590,9 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             if "transactionId" in payload:
                 payload["transactionId"] = csms_tx
                 frame[3] = payload
+        if action == "StopTransaction" and self.initiating_id_tag:
+            payload["idTag"] = self.initiating_id_tag
+            frame[3] = payload
 
         return frame
 
@@ -620,10 +648,13 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             self.active_session = None
 
         self.occupied_by = None
+        await self._clear_occupancy()
+
+    def _clear_transaction_context(self):
         self.initiating_csms = None
+        self.initiating_id_tag = None
         self.proxy_tx_id = None
         self.csms_tx_ids.clear()
-        await self._clear_occupancy()
 
     async def _on_meter_values(self, payload: dict):
         if not self.active_session or self.occupied_by != "self":
