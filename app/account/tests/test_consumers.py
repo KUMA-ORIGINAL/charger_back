@@ -8,7 +8,12 @@ from channels.testing import WebsocketCommunicator
 from django.test import TransactionTestCase, override_settings
 from asgiref.sync import sync_to_async
 
-from account.models import ChargePoint, ChargePointCSMS, CSMSService
+from account.models import (
+    ChargePoint,
+    ChargePointCSMS,
+    CSMSService,
+    CSMSTransactionMapping,
+)
 from account.consumers import OCPPConsumer
 from account.ocpp_routing import websocket_urlpatterns
 
@@ -395,5 +400,42 @@ class OCPPConsumerTests(TransactionTestCase):
                 lambda: any(f[1] == "hb-owner-only-1" for f in ws_a.sent)
             )
             self.assertFalse(any(f[1] == "hb-owner-only-1" for f in ws_b.sent))
+
+            await communicator.disconnect()
+
+    async def test_remote_stop_restores_station_tx_from_db_mapping(self):
+        factory = FakeWebsocketsFactory()
+
+        with patch("account.consumers.websockets.connect", new=factory.connect):
+            communicator = WebsocketCommunicator(self.app, "/ws/ocpp/301")
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+
+            ws_a = factory.by_url["ws://mock-a/CP301A"]
+
+            # Simulate persisted mapping from previous runtime.
+            await sync_to_async(CSMSTransactionMapping.objects.create)(
+                charge_point=self.cp,
+                csms_name="MockA",
+                csms_transaction_id=3304752,
+                station_transaction_id=44314,
+                id_tag="TAG-A",
+                is_active=True,
+            )
+
+            # RemoteStop with CSMS tx should be rewritten to station tx.
+            ws_a.push_incoming(
+                [
+                    2,
+                    "remote-stop-restore-1",
+                    "RemoteStopTransaction",
+                    {"transactionId": 3304752},
+                ]
+            )
+            forwarded = await communicator.receive_json_from()
+            self.assertEqual(forwarded[0], 2)
+            self.assertEqual(forwarded[1], "remote-stop-restore-1")
+            self.assertEqual(forwarded[2], "RemoteStopTransaction")
+            self.assertEqual(forwarded[3]["transactionId"], 44314)
 
             await communicator.disconnect()

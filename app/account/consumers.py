@@ -9,7 +9,12 @@ import websockets
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
-from account.models import ChargePoint, ChargePointCSMS, ChargingSession
+from account.models import (
+    ChargePoint,
+    ChargePointCSMS,
+    ChargingSession,
+    CSMSTransactionMapping,
+)
 
 logger = logging.getLogger("ocpp")
 
@@ -29,7 +34,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     CSMS   Result → store txId mapping (StartTransaction), log, discard
     """
     CSMS_SYNC_INTERVAL = 5
-    SPARK_FORCE_STOP_TX_ID = 3304752
+    FORCE_STOP_EXTERNAL_TX_IDS = {3304752, 729380}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -503,15 +508,34 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         _, message_id, action, payload = frame
         logger.info(f"[CSMS CALL] {csms_name} {action}")
 
+        force_stop_external_tx_id = (
+            payload.get("transactionId")
+            if action == "RemoteStopTransaction" and isinstance(payload, dict)
+            else None
+        )
         force_stop_by_external_tx = (
             action == "RemoteStopTransaction"
             and isinstance(payload, dict)
-            and payload.get("transactionId") == self.SPARK_FORCE_STOP_TX_ID
+            and force_stop_external_tx_id in self.FORCE_STOP_EXTERNAL_TX_IDS
         )
 
         # Recovery path: runtime state may be empty after reconnect/restart.
         if action == "RemoteStopTransaction" and self.proxy_tx_id is None:
-            self.proxy_tx_id = await self._get_active_transaction_id()
+            external_tx = payload.get("transactionId") if isinstance(payload, dict) else None
+            if external_tx is not None:
+                restored_tx, restored_id_tag = await self._get_station_tx_from_mapping(
+                    csms_name, external_tx
+                )
+                if restored_tx is not None:
+                    self.proxy_tx_id = restored_tx
+                    if restored_id_tag:
+                        self.initiating_id_tag = restored_id_tag
+                    logger.info(
+                        f"[TX MAP RESTORE] {csms_name} external_tx={external_tx} "
+                        f"-> station_tx={restored_tx}"
+                    )
+            if self.proxy_tx_id is None:
+                self.proxy_tx_id = await self._get_active_transaction_id()
 
         # --- access control for start / stop ---
         if (
@@ -534,11 +558,11 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         if action == "RemoteStopTransaction":
             if self.proxy_tx_id is None and force_stop_by_external_tx:
                 # Custom recovery: if station tx id is unknown, still try stop
-                # with Spark transaction id requested by ops.
-                self.proxy_tx_id = self.SPARK_FORCE_STOP_TX_ID
+                # with external CSMS transaction id requested by ops.
+                self.proxy_tx_id = force_stop_external_tx_id
                 logger.warning(
                     f"[FORCE STOP FALLBACK] {csms_name} uses external_tx="
-                    f"{self.SPARK_FORCE_STOP_TX_ID} as station tx"
+                    f"{force_stop_external_tx_id} as station tx"
                 )
             if self.proxy_tx_id is None:
                 result = [3, message_id, {"status": "Rejected"}]
@@ -554,7 +578,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 }
                 logger.info(
                     f"[FORCE STOP MAP] {csms_name} external_tx="
-                    f"{self.SPARK_FORCE_STOP_TX_ID} -> station_tx={self.proxy_tx_id}"
+                    f"{force_stop_external_tx_id} -> station_tx={self.proxy_tx_id}"
                 )
 
         # --- txId rewrite (CSMS → station) ---
@@ -601,6 +625,12 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             csms_tx = payload.get("transactionId")
             if csms_tx is not None:
                 self.csms_tx_ids[csms_name] = csms_tx
+                await self._save_tx_mapping(
+                    csms_name=csms_name,
+                    csms_tx_id=csms_tx,
+                    station_tx_id=self.proxy_tx_id,
+                    id_tag=self.initiating_id_tag or "",
+                )
                 logger.info(
                     f"[TX MAP] {csms_name} csms_tx={csms_tx} "
                     f"proxy_tx={self.proxy_tx_id}"
@@ -689,6 +719,8 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             await self._update_session_stopped(meter_stop)
             self.active_session = None
 
+        if tx_id is not None:
+            await self._deactivate_tx_mapping_by_station_tx(tx_id)
         self.occupied_by = None
         await self._clear_occupancy()
 
@@ -930,6 +962,45 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     def _get_active_transaction_id(self):
         cp = ChargePoint.objects.get(cp_id=self.cp_id)
         return cp.active_transaction_id
+
+    @database_sync_to_async
+    def _save_tx_mapping(self, csms_name: str, csms_tx_id: int, station_tx_id: int, id_tag: str = ""):
+        if station_tx_id is None:
+            return
+        CSMSTransactionMapping.objects.update_or_create(
+            charge_point=self.charge_point,
+            csms_name=csms_name,
+            csms_transaction_id=csms_tx_id,
+            defaults={
+                "station_transaction_id": station_tx_id,
+                "id_tag": id_tag or "",
+                "is_active": True,
+            },
+        )
+
+    @database_sync_to_async
+    def _get_station_tx_from_mapping(self, csms_name: str, csms_tx_id: int):
+        mapping = (
+            CSMSTransactionMapping.objects.filter(
+                charge_point=self.charge_point,
+                csms_name=csms_name,
+                csms_transaction_id=csms_tx_id,
+                is_active=True,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if not mapping:
+            return None, ""
+        return mapping.station_transaction_id, mapping.id_tag or ""
+
+    @database_sync_to_async
+    def _deactivate_tx_mapping_by_station_tx(self, station_tx_id: int):
+        CSMSTransactionMapping.objects.filter(
+            charge_point=self.charge_point,
+            station_transaction_id=station_tx_id,
+            is_active=True,
+        ).update(is_active=False)
 
     # ================================================================
     #  UTILS
