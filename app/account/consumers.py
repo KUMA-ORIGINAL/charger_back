@@ -34,7 +34,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     CSMS   Result → store txId mapping (StartTransaction), log, discard
     """
     CSMS_SYNC_INTERVAL = 5
-    FORCE_STOP_EXTERNAL_TX_IDS = {3304752, 729380}
+    FORCE_STOP_EXTERNAL_TX_IDS = {3304752, 729380, 3331160}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
