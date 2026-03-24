@@ -394,6 +394,12 @@ UNFOLD = {
                         "permission": "account.utils.permission_callback_for_admin",
                     },
                     {
+                        "title": _("Маппинг транзакций CSMS"),
+                        "icon": "compare_arrows",
+                        "link": reverse_lazy("admin:account_csmstransactionmapping_changelist"),
+                        "permission": "account.utils.permission_callback_for_admin",
+                    },
+                    {
                         "title": _("Сессии зарядки"),
                         "icon": "bolt",
                         "link": reverse_lazy("admin:account_chargingsession_changelist"),

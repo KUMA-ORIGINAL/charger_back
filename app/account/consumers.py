@@ -300,7 +300,12 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         # 3) selective forwarding to CSMS
         await self._forward_station_call(frame, action, payload)
+
+        # 4) post-forward cleanup for StopTransaction
         if action == "StopTransaction":
+            tx_id = payload.get("transactionId")
+            if tx_id is not None:
+                await self._deactivate_tx_mapping_by_station_tx(tx_id)
             self._clear_transaction_context()
 
     # ---- response generator ----
@@ -382,10 +387,38 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 await self._send_to_csms(self.initiating_csms, raw)
                 return
 
-        # transaction-specific messages → only to initiating CSMS
+        # transaction-specific messages
         if action in ("StartTransaction", "StopTransaction", "MeterValues"):
             if self.occupied_by == "self":
                 return  # our session — CSMS should not see details
+
+            # StopTransaction must reach connected CSMS even when owner context
+            # was lost after reconnect/restart.
+            if action == "StopTransaction":
+                station_tx_id = payload.get("transactionId")
+                targets = []
+                if (
+                    self.initiating_csms
+                    and self.initiating_csms in self.remote_connections
+                ):
+                    targets = [self.initiating_csms]
+                else:
+                    targets = list(self.remote_connections)
+                for csms_name in targets:
+                    csms_frame = await self._rewrite_stop_for_csms(
+                        csms_name, frame, station_tx_id
+                    )
+                    mapped_tx = (
+                        csms_frame[3].get("transactionId")
+                        if len(csms_frame) > 3 and isinstance(csms_frame[3], dict)
+                        else None
+                    )
+                    logger.info(
+                        f"[STOP→{csms_name}] station_tx={station_tx_id} "
+                        f"csms_tx={mapped_tx}"
+                    )
+                    await self._send_to_csms(csms_name, json.dumps(csms_frame))
+                return
 
             if (
                 self.initiating_csms
@@ -407,6 +440,38 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         # everything else → broadcast to all CSMS
         for csms_name in list(self.remote_connections):
             await self._send_to_csms(csms_name, raw)
+
+    async def _rewrite_stop_for_csms(
+        self, csms_name: str, frame: list, station_tx_id: int | None
+    ) -> list:
+        """
+        Build StopTransaction frame for a specific CSMS.
+        Always works on a deep copy so iterating over multiple CSMS is safe.
+        Uses in-memory tx mapping first, then persistent DB mapping fallback.
+        """
+        csms_frame = json.loads(json.dumps(frame))
+        csms_frame = self._rewrite_tx_for_csms(csms_name, csms_frame, "StopTransaction")
+
+        if len(csms_frame) < 4 or not isinstance(csms_frame[3], dict):
+            return csms_frame
+
+        if station_tx_id is None:
+            return csms_frame
+
+        payload = csms_frame[3]
+        current_tx_id = payload.get("transactionId")
+        if current_tx_id != station_tx_id:
+            return csms_frame
+
+        mapped_tx_id, mapped_id_tag = await self._get_csms_tx_from_station_mapping(
+            csms_name, station_tx_id
+        )
+        if mapped_tx_id is not None:
+            payload["transactionId"] = mapped_tx_id
+        if mapped_id_tag and not payload.get("idTag"):
+            payload["idTag"] = mapped_id_tag
+        csms_frame[3] = payload
+        return csms_frame
 
     # ================================================================
     #  STATION CALLRESULT / CALLERROR  (station → CSMS)
@@ -719,8 +784,6 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             await self._update_session_stopped(meter_stop)
             self.active_session = None
 
-        if tx_id is not None:
-            await self._deactivate_tx_mapping_by_station_tx(tx_id)
         self.occupied_by = None
         await self._clear_occupancy()
 
@@ -1001,6 +1064,21 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             station_transaction_id=station_tx_id,
             is_active=True,
         ).update(is_active=False)
+
+    @database_sync_to_async
+    def _get_csms_tx_from_station_mapping(self, csms_name: str, station_tx_id: int):
+        mapping = (
+            CSMSTransactionMapping.objects.filter(
+                charge_point=self.charge_point,
+                csms_name=csms_name,
+                station_transaction_id=station_tx_id,
+            )
+            .order_by("-is_active", "-created_at")
+            .first()
+        )
+        if not mapping:
+            return None, ""
+        return mapping.csms_transaction_id, mapping.id_tag or ""
 
     # ================================================================
     #  UTILS

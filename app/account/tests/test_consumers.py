@@ -439,3 +439,61 @@ class OCPPConsumerTests(TransactionTestCase):
             self.assertEqual(forwarded[3]["transactionId"], 44314)
 
             await communicator.disconnect()
+
+    async def test_station_stop_is_forwarded_to_connected_csms_with_mapping_fallback(self):
+        factory = FakeWebsocketsFactory()
+
+        with patch("account.consumers.websockets.connect", new=factory.connect):
+            communicator = WebsocketCommunicator(self.app, "/ws/ocpp/301")
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+
+            ws_a = factory.by_url["ws://mock-a/CP301A"]
+            ws_b = factory.by_url["ws://mock-b/CP301B"]
+
+            await sync_to_async(CSMSTransactionMapping.objects.create)(
+                charge_point=self.cp,
+                csms_name="MockA",
+                csms_transaction_id=3331160,
+                station_transaction_id=794279,
+                id_tag="TAG-A",
+                is_active=True,
+            )
+            await sync_to_async(CSMSTransactionMapping.objects.create)(
+                charge_point=self.cp,
+                csms_name="MockB",
+                csms_transaction_id=8899001,
+                station_transaction_id=794279,
+                id_tag="TAG-B",
+                is_active=True,
+            )
+
+            await communicator.send_json_to(
+                [
+                    2,
+                    "stop-fwd-1",
+                    "StopTransaction",
+                    {
+                        "transactionId": 794279,
+                        "meterStop": 14220,
+                        "timestamp": datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ"
+                        ),
+                        "reason": "Other",
+                    },
+                ]
+            )
+            stop_res = await communicator.receive_json_from()
+            self.assertEqual(stop_res, [3, "stop-fwd-1", {}])
+
+            await self._wait_for(
+                lambda: any(f[1] == "stop-fwd-1" and f[2] == "StopTransaction" for f in ws_a.sent)
+                and any(f[1] == "stop-fwd-1" and f[2] == "StopTransaction" for f in ws_b.sent)
+            )
+
+            stop_a = [f for f in ws_a.sent if f[1] == "stop-fwd-1" and f[2] == "StopTransaction"][-1]
+            stop_b = [f for f in ws_b.sent if f[1] == "stop-fwd-1" and f[2] == "StopTransaction"][-1]
+            self.assertEqual(stop_a[3]["transactionId"], 3331160)
+            self.assertEqual(stop_b[3]["transactionId"], 8899001)
+
+            await communicator.disconnect()
