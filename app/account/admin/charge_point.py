@@ -124,7 +124,7 @@ class ChargePointAdmin(BaseModelAdmin):
         return response
 
     @action(
-        description="▶ Start charging",
+        description="▶ Начать зарядку",
         url_path="start-charging",
     )
     def start_charging_action(
@@ -144,7 +144,7 @@ class ChargePointAdmin(BaseModelAdmin):
         )
 
     @action(
-        description="⛔ Stop charging",
+        description="⛔ Остановить зарядку",
         url_path="stop-charging",
     )
     def stop_charging_action(
@@ -171,7 +171,7 @@ class ChargePointAdmin(BaseModelAdmin):
             reverse_lazy("admin:account_chargepoint_change", args=(object_id,))
         )
 
-    @action(description="📡 Проверить статус (0+1)", url_path="trigger-status")
+    @action(description="📡 Запросить статус (коннекторы 0 и 1)", url_path="trigger-status")
     def trigger_status_action(self, request, object_id):
         cp = ChargePoint.objects.get(pk=object_id)
         trigger_status(cp.cp_id, connector_id=0)
@@ -179,7 +179,7 @@ class ChargePointAdmin(BaseModelAdmin):
         messages.success(request, f"TriggerMessage StatusNotification отправлен на {cp.cp_id}")
         return redirect(reverse_lazy("admin:account_chargepoint_change", args=(object_id,)))
 
-    @action(description="✅ Сделать Available (0+1)", url_path="make-operative")
+    @action(description="✅ Включить станцию (доступна)", url_path="make-operative")
     def make_operative_action(self, request, object_id):
         cp = ChargePoint.objects.get(pk=object_id)
         change_availability(cp.cp_id, connector_id=0, availability_type="Operative")
@@ -187,7 +187,7 @@ class ChargePointAdmin(BaseModelAdmin):
         messages.success(request, f"ChangeAvailability Operative отправлен на {cp.cp_id}")
         return redirect(reverse_lazy("admin:account_chargepoint_change", args=(object_id,)))
 
-    @action(description="🔴 Сделать Unavailable (0+1)", url_path="make-inoperative")
+    @action(description="🔴 Отключить станцию (недоступна)", url_path="make-inoperative")
     def make_inoperative_action(self, request, object_id):
         cp = ChargePoint.objects.get(pk=object_id)
         change_availability(cp.cp_id, connector_id=0, availability_type="Inoperative")
@@ -195,42 +195,42 @@ class ChargePointAdmin(BaseModelAdmin):
         messages.success(request, f"ChangeAvailability Inoperative отправлен на {cp.cp_id}")
         return redirect(reverse_lazy("admin:account_chargepoint_change", args=(object_id,)))
 
-    @action(description="🔄 Soft Reset", url_path="soft-reset")
+    @action(description="🔄 Мягкая перезагрузка", url_path="soft-reset")
     def soft_reset_action(self, request, object_id):
         cp = ChargePoint.objects.get(pk=object_id)
         reset_station(cp.cp_id, reset_type="Soft")
         messages.success(request, f"Soft Reset отправлен на {cp.cp_id}")
         return redirect(reverse_lazy("admin:account_chargepoint_change", args=(object_id,)))
 
-    @action(description="⚡ Hard Reset", url_path="hard-reset")
+    @action(description="⚡ Жёсткая перезагрузка", url_path="hard-reset")
     def hard_reset_action(self, request, object_id):
         cp = ChargePoint.objects.get(pk=object_id)
         reset_station(cp.cp_id, reset_type="Hard")
         messages.success(request, f"Hard Reset отправлен на {cp.cp_id}")
         return redirect(reverse_lazy("admin:account_chargepoint_change", args=(object_id,)))
 
-    @action(description="🧹 Clear Charging Profile", url_path="clear-charging-profile")
+    @action(description="🧹 Очистить профиль зарядки", url_path="clear-charging-profile")
     def clear_charging_profile_action(self, request, object_id):
         cp = ChargePoint.objects.get(pk=object_id)
         clear_charging_profile(cp.cp_id)
         messages.success(request, f"ClearChargingProfile отправлен на {cp.cp_id}")
         return redirect(reverse_lazy("admin:account_chargepoint_change", args=(object_id,)))
 
-    @action(description="⚙️ Get Configuration", url_path="get-configuration")
+    @action(description="⚙️ Получить конфигурацию", url_path="get-configuration")
     def get_configuration_action(self, request, object_id):
         cp = ChargePoint.objects.get(pk=object_id)
         get_configuration(cp.cp_id)
         messages.success(request, f"GetConfiguration отправлен на {cp.cp_id}")
         return redirect(reverse_lazy("admin:account_chargepoint_change", args=(object_id,)))
 
-    @action(description="🔁 Trigger BootNotification", url_path="trigger-boot")
+    @action(description="🔁 Запросить BootNotification", url_path="trigger-boot")
     def trigger_boot_action(self, request, object_id):
         cp = ChargePoint.objects.get(pk=object_id)
         trigger_boot_notification(cp.cp_id)
         messages.success(request, f"TriggerMessage BootNotification отправлен на {cp.cp_id}")
         return redirect(reverse_lazy("admin:account_chargepoint_change", args=(object_id,)))
 
-    @action(description="📊 Trigger MeterValues (коннектор 1)", url_path="trigger-meter-values")
+    @action(description="📊 Запросить показания счётчика", url_path="trigger-meter-values")
     def trigger_meter_values_action(self, request, object_id):
         cp = ChargePoint.objects.get(pk=object_id)
         trigger_meter_values(cp.cp_id, connector_id=1)
