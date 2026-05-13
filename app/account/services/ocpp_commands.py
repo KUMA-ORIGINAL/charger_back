@@ -50,3 +50,40 @@ def stop_charging(cp_id: str, transaction_id: int):
             "transactionId": transaction_id,
         },
     )
+
+
+def trigger_status(cp_id: str, connector_id: int = 0):
+    ocpp_call(cp_id, "TriggerMessage", {
+        "requestedMessage": "StatusNotification",
+        "connectorId": connector_id,
+    })
+
+
+def change_availability(cp_id: str, connector_id: int, availability_type: str):
+    ocpp_call(cp_id, "ChangeAvailability", {
+        "connectorId": connector_id,
+        "type": availability_type,
+    })
+
+
+def reset_station(cp_id: str, reset_type: str = "Soft"):
+    ocpp_call(cp_id, "Reset", {"type": reset_type})
+
+
+def clear_charging_profile(cp_id: str):
+    ocpp_call(cp_id, "ClearChargingProfile", {})
+
+
+def get_configuration(cp_id: str):
+    ocpp_call(cp_id, "GetConfiguration", {})
+
+
+def trigger_boot_notification(cp_id: str):
+    ocpp_call(cp_id, "TriggerMessage", {"requestedMessage": "BootNotification"})
+
+
+def trigger_meter_values(cp_id: str, connector_id: int = 1):
+    ocpp_call(cp_id, "TriggerMessage", {
+        "requestedMessage": "MeterValues",
+        "connectorId": connector_id,
+    })
