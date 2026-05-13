@@ -9,6 +9,7 @@ Payment-initiated start/stop is handled by the consumer's
 internal monitor loop and does NOT go through the channel layer.
 """
 
+import time
 import uuid
 
 from asgiref.sync import async_to_sync
@@ -27,6 +28,20 @@ def ocpp_call(cp_id: str, action: str, payload: dict):
             "payload": payload,
         },
     )
+
+
+async def _is_cp_connected_async(cp_id: str) -> bool:
+    layer = get_channel_layer()
+    group_key = f"{layer.prefix}:group:{cp_id}".encode("utf8")
+    now = time.time()
+    async with layer.connection(layer.consistent_hash(cp_id)) as conn:
+        members = await conn.zrangebyscore(group_key, now, "+inf")
+    return bool(members)
+
+
+def is_cp_connected(cp_id: str) -> bool:
+    """Return True if the charge point has an active WebSocket connection."""
+    return async_to_sync(_is_cp_connected_async)(cp_id)
 
 
 def start_charging(cp_id: str, connector_id: int = 1, id_tag: str = "ADMIN"):
