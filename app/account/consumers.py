@@ -675,6 +675,13 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             # fallback active_transaction_id exists in DB.
             return self.occupied_by in (csms_name, None)
 
+        if action == "ChangeAvailability":
+            logger.warning(
+                f"[BLOCKED] {csms_name} попытался отправить ChangeAvailability "
+                f"— заблокировано, управление доступностью только через админку"
+            )
+            return False
+
         return True
 
     # ================================================================
