@@ -2,7 +2,7 @@ import json
 import uuid
 import logging
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import websockets
@@ -47,6 +47,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         # --- message routing ---
         self.pending_calls: dict = {}        # msg_id → csms_name  (CSMS→station)
+        self.pending_actions: dict = {}      # msg_id → action     (CSMS→station)
         self.forwarded_calls: dict = {}      # msg_id → {"action"}  (station→CSMS)
         # custom force-stop message ids -> source metadata
         self.force_accept_stop_ids: dict = {}
@@ -56,6 +57,12 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         self.csms_tx_ids: dict = {}                   # csms_name → csms txId
         self.initiating_csms: str | None = None       # who started current tx
         self.initiating_id_tag: str | None = None     # owner idTag from CSMS
+
+        # --- CSMS clock skew ---
+        # csms_name → seconds their currentTime runs ahead of real UTC.
+        # Some CSMS (Charge24) label local time with a "Z" suffix, so frames we
+        # generate ourselves must use their scale to line up in their billing.
+        self.csms_clock_offsets: dict = {}
 
         # --- occupancy ---
         self.occupied_by: str | None = None           # None | "self" | csms_name
@@ -213,6 +220,19 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             except Exception as exc:
                 logger.error(f"[CSMS SYNC ERROR] CP={self.cp_id} {exc}")
 
+    async def _hide_non_owner_csms(self, owner: str):
+        """
+        Disconnect every CSMS except the session owner, so the others see the
+        station as simply offline instead of watching a session they have no
+        transaction for. Safe to call speculatively: if the session never
+        materializes, _sync_csms_connections reconnects them on its next tick.
+        """
+        for name in list(self.remote_connections):
+            if name != owner:
+                await self._disconnect_csms(
+                    name, reason=f"hidden while occupied by {owner}"
+                )
+
     async def _sync_csms_connections(self):
         configs = await self._get_csms_configs()
         desired = {cfg["name"]: cfg["url"] for cfg in configs}
@@ -227,12 +247,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                 )
             return
         if self.occupied_by and self.occupied_by not in (None, "external"):
-            owner = self.occupied_by
-            for name in list(self.remote_connections):
-                if name != owner:
-                    await self._disconnect_csms(
-                        name, reason=f"hidden while occupied by {owner}"
-                    )
+            await self._hide_non_owner_csms(self.occupied_by)
 
         # add new services or reconnect changed endpoints
         for name, url in desired.items():
@@ -293,7 +308,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         # 1) respond to station immediately
         resp = self._make_response(action, payload)
-        await self.send(text_data=json.dumps([3, message_id, resp]))
+        await self._send_to_station([3, message_id, resp])
 
         # 2) internal processing (DB, billing, occupancy)
         await self._process_station_call(action, payload)
@@ -396,15 +411,32 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             # was lost after reconnect/restart.
             if action == "StopTransaction":
                 station_tx_id = payload.get("transactionId")
-                targets = []
-                if (
+                owner_known = (
                     self.initiating_csms
                     and self.initiating_csms in self.remote_connections
-                ):
-                    targets = [self.initiating_csms]
-                else:
-                    targets = list(self.remote_connections)
+                )
+                targets = (
+                    [self.initiating_csms]
+                    if owner_known
+                    else list(self.remote_connections)
+                )
                 for csms_name in targets:
+                    # When the owner is unknown we broadcast to every connected
+                    # CSMS, but a CSMS that never received this transaction's
+                    # StartTransaction has no tx mapping and won't recognize
+                    # the raw station id — it will just reject it with an
+                    # error. Skip those instead of guessing.
+                    if not owner_known and station_tx_id is not None:
+                        mapped_tx_id, _ = await self._get_csms_tx_from_station_mapping(
+                            csms_name, station_tx_id
+                        )
+                        if mapped_tx_id is None:
+                            logger.info(
+                                f"[STOP SKIP] {csms_name} has no tx mapping for "
+                                f"station_tx={station_tx_id} — not forwarding"
+                            )
+                            continue
+
                     csms_frame = await self._rewrite_stop_for_csms(
                         csms_name, frame, station_tx_id
                     )
@@ -420,19 +452,33 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                     await self._send_to_csms(csms_name, json.dumps(csms_frame))
                 return
 
-            if (
+            # MeterValues may resume after a restart/CSMS reconnect wiped the
+            # runtime owner, so fall back to persisted occupancy the same way
+            # the StopTransaction recovery path does.
+            owner = (
                 self.initiating_csms
-                and self.initiating_csms in self.remote_connections
-            ):
-                csms_frame = self._rewrite_tx_for_csms(
-                    self.initiating_csms, frame, action
+                if self.initiating_csms in self.remote_connections
+                else (
+                    self.occupied_by
+                    if action == "MeterValues"
+                    and self.occupied_by in self.remote_connections
+                    else None
                 )
+            )
+            if owner:
+                csms_frame = self._rewrite_tx_for_csms(owner, frame, action)
+                # The in-memory tx mapping is lost in the same scenarios, so
+                # resolve station_tx → csms_tx from the DB as StopTransaction
+                # does — otherwise the CSMS gets a raw station txId it cannot
+                # recognize.
+                if action == "MeterValues":
+                    csms_frame = await self._apply_db_tx_mapping(
+                        owner, csms_frame, payload.get("transactionId")
+                    )
                 # track so we can grab csms txId from the response
                 if action == "StartTransaction":
                     self.forwarded_calls[message_id] = {"action": action}
-                await self._send_to_csms(
-                    self.initiating_csms, json.dumps(csms_frame)
-                )
+                await self._send_to_csms(owner, json.dumps(csms_frame))
                 return
             # Never broadcast transaction-specific frames when owner is unknown.
             return
@@ -458,19 +504,54 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         if station_tx_id is None:
             return csms_frame
 
-        payload = csms_frame[3]
-        current_tx_id = payload.get("transactionId")
-        if current_tx_id != station_tx_id:
+        return await self._apply_db_tx_mapping(
+            csms_name, csms_frame, station_tx_id, fill_id_tag=True
+        )
+
+    async def _apply_db_tx_mapping(
+        self,
+        csms_name: str,
+        csms_frame: list,
+        station_tx_id: int | None,
+        fill_id_tag: bool = False,
+    ) -> list:
+        """
+        Fallback for when the in-memory tx mapping is gone: resolve
+        station_tx → csms_tx from the persistent mapping.
+
+        No-op when the frame already carries a remapped txId.
+        """
+        if station_tx_id is None:
             return csms_frame
+        if len(csms_frame) < 4 or not isinstance(csms_frame[3], dict):
+            return csms_frame
+
+        payload = csms_frame[3]
+        if payload.get("transactionId") != station_tx_id:
+            return csms_frame          # already remapped in memory
 
         mapped_tx_id, mapped_id_tag = await self._get_csms_tx_from_station_mapping(
             csms_name, station_tx_id
         )
-        if mapped_tx_id is not None:
-            payload["transactionId"] = mapped_tx_id
-        if mapped_id_tag and not payload.get("idTag"):
+        if mapped_tx_id is None:
+            logger.warning(
+                f"[TX MAP MISS] {csms_name} station_tx={station_tx_id} — "
+                f"forwarding raw station txId"
+            )
+            return csms_frame
+
+        # deep copy: _rewrite_tx_for_csms returns the original frame when it
+        # has no mapping to apply, and the caller's frame must stay untouched
+        csms_frame = json.loads(json.dumps(csms_frame))
+        payload = csms_frame[3]
+        payload["transactionId"] = mapped_tx_id
+        if fill_id_tag and mapped_id_tag and not payload.get("idTag"):
             payload["idTag"] = mapped_id_tag
-        csms_frame[3] = payload
+
+        # repopulate in-memory cache so following frames skip the DB
+        self.csms_tx_ids.setdefault(csms_name, mapped_tx_id)
+        if self.proxy_tx_id is None:
+            self.proxy_tx_id = station_tx_id
         return csms_frame
 
     # ================================================================
@@ -493,9 +574,20 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         # route to originating CSMS
         csms_name = self.pending_calls.pop(message_id, None)
+        pending_action = self.pending_actions.pop(message_id, None)
         if not csms_name:
             logger.debug(f"[RESULT] msg={message_id} — no pending CSMS")
             return
+
+        # The station accepted an external start: hide the station from the
+        # other CSMS right away, instead of waiting for StartTransaction a few
+        # seconds later — they would otherwise see Preparing/Charging for a
+        # transaction they never get.
+        if (
+            pending_action == "RemoteStartTransaction"
+            and payload.get("status") == "Accepted"
+        ):
+            await self._hide_non_owner_csms(csms_name)
 
         force_stop_meta = self.force_accept_stop_ids.pop(message_id, None)
         if force_stop_meta:
@@ -523,6 +615,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             return
 
         csms_name = self.pending_calls.pop(message_id, None)
+        self.pending_actions.pop(message_id, None)
         if csms_name:
             logger.error(f"[ST→{csms_name}] error msg={message_id}")
             await self._send_to_csms(csms_name, json.dumps(frame))
@@ -661,10 +754,11 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         # --- track for response routing ---
         self.pending_calls[message_id] = csms_name
+        self.pending_actions[message_id] = action
 
         # --- forward to station ---
         logger.info(f"[→ST] {csms_name} {action}")
-        await self.send(text_data=json.dumps(frame))
+        await self._send_to_station(frame)
 
     def _is_command_allowed(self, csms_name: str, action: str) -> bool:
         if action == "RemoteStartTransaction":
@@ -707,6 +801,9 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                     f"[TX MAP] {csms_name} csms_tx={csms_tx} "
                     f"proxy_tx={self.proxy_tx_id}"
                 )
+
+        if isinstance(payload, dict) and payload.get("currentTime"):
+            self._learn_csms_clock_offset(csms_name, payload["currentTime"])
 
         logger.debug(f"[CSMS RESULT] {csms_name} msg={message_id} (drop)")
 
@@ -811,7 +908,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         payload = {
             "transactionId": external_tx,
             "meterStop": 0,
-            "timestamp": self._now(),
+            "timestamp": self._now_for_csms(csms_name),
             "reason": "Remote",
         }
         if self.initiating_id_tag:
@@ -903,7 +1000,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             {"connectorId": 1, "idTag": tag},
         ]
         logger.info(f"[REMOTE START] CP={self.cp_id} session={self.active_session.id}")
-        await self.send(text_data=json.dumps(frame))
+        await self._send_to_station(frame)
 
     async def _send_remote_stop(self):
         if not self.proxy_tx_id:
@@ -914,7 +1011,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             {"transactionId": self.proxy_tx_id},
         ]
         logger.info(f"[REMOTE STOP] CP={self.cp_id} tx={self.proxy_tx_id}")
-        await self.send(text_data=json.dumps(frame))
+        await self._send_to_station(frame)
 
     # channel-layer handler (admin / API)
     async def send_ocpp(self, event):
@@ -925,17 +1022,24 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             event.get("payload", {}),
         ]
         logger.info(f"[CH CMD] CP={self.cp_id} {event['action']}")
-        await self.send(text_data=json.dumps(frame))
+        await self._send_to_station(frame)
 
     # ================================================================
     #  FORWARDING HELPER
     # ================================================================
+
+    async def _send_to_station(self, frame: list):
+        """Single exit towards the station, so every frame gets logged."""
+        data = json.dumps(frame)
+        logger.info(f"[PX→ST] CP={self.cp_id} {data}")
+        await self.send(text_data=data)
 
     async def _send_to_csms(self, csms_name: str, data: str):
         ws = self.remote_connections.get(csms_name)
         if not ws:
             return
         try:
+            logger.info(f"[PX→{csms_name}] {data}")
             await ws.send(data)
         except Exception as exc:
             logger.error(f"[SEND ERR] →{csms_name}: {exc}")
@@ -1094,3 +1198,32 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def _learn_csms_clock_offset(self, csms_name: str, current_time: str):
+        """
+        Remember how far a CSMS clock runs from real UTC, rounded to whole
+        quarter-hours so network latency never shifts the value.
+        """
+        try:
+            csms_dt = datetime.fromisoformat(
+                str(current_time).replace("Z", "+00:00")
+            )
+        except ValueError:
+            logger.warning(
+                f"[CLOCK] {csms_name} unparsable currentTime={current_time!r}"
+            )
+            return
+        if csms_dt.tzinfo is None:
+            csms_dt = csms_dt.replace(tzinfo=timezone.utc)
+
+        delta = (csms_dt - datetime.now(timezone.utc)).total_seconds()
+        offset = int(round(delta / 900.0)) * 900
+        if self.csms_clock_offsets.get(csms_name) != offset:
+            self.csms_clock_offsets[csms_name] = offset
+            logger.info(f"[CLOCK] {csms_name} offset={offset}s from UTC")
+
+    def _now_for_csms(self, csms_name: str) -> str:
+        """Current time in the scale a given CSMS uses (see clock offsets)."""
+        offset = self.csms_clock_offsets.get(csms_name, 0)
+        moment = datetime.now(timezone.utc) + timedelta(seconds=offset)
+        return moment.strftime("%Y-%m-%dT%H:%M:%SZ")

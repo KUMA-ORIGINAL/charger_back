@@ -1,11 +1,11 @@
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
-from django.test import TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TransactionTestCase, override_settings
 from asgiref.sync import sync_to_async
 
 from account.models import (
@@ -188,11 +188,12 @@ class OCPPConsumerTests(TransactionTestCase):
             self.assertEqual(forwarded_call[1], "remote-start-a")
             self.assertEqual(forwarded_call[2], "RemoteStartTransaction")
 
-            # station accepts remote start
+            # station accepts remote start -> non-owner CSMS is hidden at once
             await communicator.send_json_to([3, "remote-start-a", {"status": "Accepted"}])
             await self._wait_for(
                 lambda: any(f[0] == 3 and f[1] == "remote-start-a" for f in ws_a.sent)
             )
+            await self._wait_for(lambda: ws_b._closed)
 
             # station sends Authorize (must go only to initiator A)
             await communicator.send_json_to(
@@ -231,7 +232,110 @@ class OCPPConsumerTests(TransactionTestCase):
             self.assertEqual(start_tx_result[1], "start-tx-1")
             self.assertIn("transactionId", start_tx_result[2])
 
-            # CSMS B tries to start while occupied -> must be blocked
+            # B stays hidden while A owns the session: nothing of this
+            # transaction reaches it, not even as a rejected command
+            self.assertFalse(any(f[1] == "start-tx-1" for f in ws_b.sent))
+
+            await communicator.disconnect()
+
+    async def test_non_owner_csms_hidden_before_start_transaction(self):
+        """
+        A CSMS that did not initiate the session must stop seeing the station
+        as soon as the station accepts the other CSMS's RemoteStartTransaction
+        — not only once StartTransaction arrives seconds later, which would
+        leak Preparing/Charging for a transaction it never receives.
+        """
+        factory = FakeWebsocketsFactory()
+
+        with patch("account.consumers.websockets.connect", new=factory.connect):
+            communicator = WebsocketCommunicator(self.app, "/ws/ocpp/301")
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+
+            ws_a = factory.by_url["ws://mock-a/CP301A"]
+            ws_b = factory.by_url["ws://mock-b/CP301B"]
+
+            ws_a.push_incoming(
+                [
+                    2,
+                    "remote-start-a",
+                    "RemoteStartTransaction",
+                    {"connectorId": 1, "idTag": "TAG-A"},
+                ]
+            )
+            await communicator.receive_json_from()
+            await communicator.send_json_to(
+                [3, "remote-start-a", {"status": "Accepted"}]
+            )
+            await self._wait_for(lambda: ws_b._closed)
+            self.assertFalse(ws_a._closed)
+
+            # status updates that follow reach the owner only
+            await communicator.send_json_to(
+                [
+                    2,
+                    "st-1",
+                    "StatusNotification",
+                    {"connectorId": 1, "status": "Preparing", "errorCode": "NoError"},
+                ]
+            )
+            await communicator.receive_json_from()
+            await self._wait_for(
+                lambda: any(f[1] == "st-1" for f in ws_a.sent)
+            )
+            self.assertFalse(any(f[1] == "st-1" for f in ws_b.sent))
+
+            await communicator.disconnect()
+
+    async def test_rejected_start_does_not_hide_other_csms(self):
+        """A rejected RemoteStart must leave every CSMS connected."""
+        factory = FakeWebsocketsFactory()
+
+        with patch("account.consumers.websockets.connect", new=factory.connect):
+            communicator = WebsocketCommunicator(self.app, "/ws/ocpp/301")
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+
+            ws_a = factory.by_url["ws://mock-a/CP301A"]
+            ws_b = factory.by_url["ws://mock-b/CP301B"]
+
+            ws_a.push_incoming(
+                [
+                    2,
+                    "remote-start-a",
+                    "RemoteStartTransaction",
+                    {"connectorId": 1, "idTag": "TAG-A"},
+                ]
+            )
+            await communicator.receive_json_from()
+            await communicator.send_json_to(
+                [3, "remote-start-a", {"status": "Rejected"}]
+            )
+            await self._wait_for(
+                lambda: any(f[0] == 3 and f[1] == "remote-start-a" for f in ws_a.sent)
+            )
+            await asyncio.sleep(0.1)
+            self.assertFalse(ws_b._closed)
+
+            await communicator.disconnect()
+
+    async def test_connected_csms_is_rejected_while_owner_unknown(self):
+        """
+        When occupancy was restored from the DB without an owner name, every
+        CSMS stays connected — and RemoteStart must still be refused.
+        """
+        await sync_to_async(
+            ChargePoint.objects.filter(cp_id="301").update
+        )(is_occupied=True, occupied_by=None)
+
+        factory = FakeWebsocketsFactory()
+
+        with patch("account.consumers.websockets.connect", new=factory.connect):
+            communicator = WebsocketCommunicator(self.app, "/ws/ocpp/301")
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+
+            ws_b = factory.by_url["ws://mock-b/CP301B"]
             ws_b.push_incoming(
                 [
                     2,
@@ -496,4 +600,158 @@ class OCPPConsumerTests(TransactionTestCase):
             self.assertEqual(stop_a[3]["transactionId"], 3331160)
             self.assertEqual(stop_b[3]["transactionId"], 8899001)
 
+    async def test_station_stop_skips_csms_without_tx_mapping_when_owner_unknown(self):
+        """
+        A CSMS that never received this transaction's StartTransaction (no
+        CSMSTransactionMapping row) must not get the StopTransaction with a
+        raw/unmapped station tx id — it can't recognize it and would reject
+        it as an error. It should simply be skipped.
+        """
+        factory = FakeWebsocketsFactory()
+
+        with patch("account.consumers.websockets.connect", new=factory.connect):
+            communicator = WebsocketCommunicator(self.app, "/ws/ocpp/301")
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+
+            ws_a = factory.by_url["ws://mock-a/CP301A"]
+            ws_b = factory.by_url["ws://mock-b/CP301B"]
+
+            # Only MockA ever saw this transaction start.
+            await sync_to_async(CSMSTransactionMapping.objects.create)(
+                charge_point=self.cp,
+                csms_name="MockA",
+                csms_transaction_id=3331160,
+                station_transaction_id=794279,
+                id_tag="TAG-A",
+                is_active=True,
+            )
+
+            await communicator.send_json_to(
+                [
+                    2,
+                    "stop-skip-1",
+                    "StopTransaction",
+                    {
+                        "transactionId": 794279,
+                        "meterStop": 14220,
+                        "timestamp": datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%dT%H:%M:%SZ"
+                        ),
+                        "reason": "Other",
+                    },
+                ]
+            )
+            stop_res = await communicator.receive_json_from()
+            self.assertEqual(stop_res, [3, "stop-skip-1", {}])
+
+            await self._wait_for(
+                lambda: any(f[1] == "stop-skip-1" and f[2] == "StopTransaction" for f in ws_a.sent)
+            )
+            # give MockB a chance to (incorrectly) receive it too
+            await asyncio.sleep(0.1)
+
+            stop_a = [f for f in ws_a.sent if f[1] == "stop-skip-1" and f[2] == "StopTransaction"][-1]
+            self.assertEqual(stop_a[3]["transactionId"], 3331160)
+
+            stop_b = [f for f in ws_b.sent if f[1] == "stop-skip-1" and f[2] == "StopTransaction"]
+            self.assertEqual(stop_b, [])
+
             await communicator.disconnect()
+
+    async def test_meter_values_use_db_tx_mapping_after_owner_context_lost(self):
+        """
+        After a proxy restart (or CSMS reconnect) the runtime owner and the
+        in-memory tx mapping are gone. MeterValues must still reach the owner
+        CSMS carrying its own transactionId, resolved from the persisted
+        mapping — never the raw station id, which the CSMS cannot recognize.
+        """
+        factory = FakeWebsocketsFactory()
+
+        # persisted state left behind by the session that was running
+        await sync_to_async(
+            ChargePoint.objects.filter(cp_id="301").update
+        )(is_occupied=True, occupied_by="MockA", active_transaction_id=794279)
+        await sync_to_async(CSMSTransactionMapping.objects.create)(
+            charge_point=self.cp,
+            csms_name="MockA",
+            csms_transaction_id=3331160,
+            station_transaction_id=794279,
+            id_tag="TAG-A",
+            is_active=True,
+        )
+
+        with patch("account.consumers.websockets.connect", new=factory.connect):
+            communicator = WebsocketCommunicator(self.app, "/ws/ocpp/301")
+            connected, _ = await communicator.connect()
+            self.assertTrue(connected)
+
+            ws_a = factory.by_url["ws://mock-a/CP301A"]
+            ws_b = factory.by_url["ws://mock-b/CP301B"]
+
+            await communicator.send_json_to(
+                [
+                    2,
+                    "mv-1",
+                    "MeterValues",
+                    {
+                        "connectorId": 1,
+                        "transactionId": 794279,
+                        "meterValue": [
+                            {
+                                "timestamp": datetime.now(timezone.utc).strftime(
+                                    "%Y-%m-%dT%H:%M:%SZ"
+                                ),
+                                "sampledValue": [{"value": "610"}],
+                            }
+                        ],
+                    },
+                ]
+            )
+            mv_res = await communicator.receive_json_from()
+            self.assertEqual(mv_res, [3, "mv-1", {}])
+
+            await self._wait_for(
+                lambda: any(f[1] == "mv-1" and f[2] == "MeterValues" for f in ws_a.sent)
+            )
+            # give MockB a chance to (incorrectly) receive it too
+            await asyncio.sleep(0.1)
+
+            mv_a = [f for f in ws_a.sent if f[1] == "mv-1" and f[2] == "MeterValues"][-1]
+            self.assertEqual(mv_a[3]["transactionId"], 3331160)
+            self.assertEqual(
+                [f for f in ws_b.sent if f[1] == "mv-1" and f[2] == "MeterValues"], []
+            )
+
+            await communicator.disconnect()
+
+
+class CSMSClockOffsetTests(SimpleTestCase):
+    """Clock scale of frames the proxy generates itself for a CSMS."""
+
+    def setUp(self):
+        self.consumer = OCPPConsumer()
+
+    def test_offset_learned_from_csms_current_time(self):
+        ahead = datetime.now(timezone.utc) + timedelta(hours=6)
+        self.consumer._learn_csms_clock_offset(
+            "Charge24", ahead.strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+        self.assertEqual(self.consumer.csms_clock_offsets["Charge24"], 6 * 3600)
+
+        stamp = self.consumer._now_for_csms("Charge24")
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        self.assertLess(abs((parsed - ahead).total_seconds()), 5)
+
+    def test_utc_csms_gets_plain_utc_and_unknown_csms_too(self):
+        now = datetime.now(timezone.utc)
+        self.consumer._learn_csms_clock_offset(
+            "Spark", now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+        self.assertEqual(self.consumer.csms_clock_offsets["Spark"], 0)
+        self.assertEqual(self.consumer._now_for_csms("Spark"), self.consumer._now())
+        self.assertEqual(self.consumer._now_for_csms("Unknown"), self.consumer._now())
+
+    def test_unparsable_current_time_is_ignored(self):
+        self.consumer._learn_csms_clock_offset("Charge24", "not-a-time")
+        self.assertNotIn("Charge24", self.consumer.csms_clock_offsets)
