@@ -13,6 +13,7 @@ from account.models import (
     ChargePoint,
     ChargePointCSMS,
     ChargingSession,
+    ChargingSessionMeterValue,
     CSMSTransactionMapping,
 )
 
@@ -68,8 +69,12 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         self.occupied_by: str | None = None           # None | "self" | csms_name
 
         # --- payment session ---
-        self.active_session = None                    # ChargingSession
+        self.active_session = None                    # ChargingSession (source=payment)
         self.monitoring_task = None
+
+        # --- external CSMS session (Charge24, Spark, ...) ---
+        # Recorded for history only: no billing, no balance monitoring.
+        self.csms_session = None                      # ChargingSession (source=csms)
 
         # --- state ---
         self.connector_status: dict = {}              # connector_id → status
@@ -110,6 +115,16 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             cp_data = await self._get_charge_point_data()
             if cp_data["is_occupied"]:
                 self.occupied_by = cp_data["occupied_by"] or "external"
+                self.csms_session = await self._get_active_csms_session()
+            if self.csms_session:
+                self.proxy_tx_id = self.csms_session.transaction_id
+                self.initiating_csms = self.csms_session.csms_name or None
+                self.initiating_id_tag = self.csms_session.id_tag or None
+                logger.info(
+                    f"[RESUME] CP={self.cp_id} "
+                    f"csms_session={self.csms_session.id} "
+                    f"csms={self.csms_session.csms_name}"
+                )
 
         # --- background tasks ---
         self.monitoring_task = asyncio.create_task(self._monitor_session())
@@ -797,6 +812,11 @@ class OCPPConsumer(AsyncWebsocketConsumer):
                     station_tx_id=self.proxy_tx_id,
                     id_tag=self.initiating_id_tag or "",
                 )
+                if (
+                    self.csms_session
+                    and self.csms_session.csms_name == csms_name
+                ):
+                    await self._set_csms_session_tx(csms_tx)
                 logger.info(
                     f"[TX MAP] {csms_name} csms_tx={csms_tx} "
                     f"proxy_tx={self.proxy_tx_id}"
@@ -872,6 +892,12 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             csms = self.initiating_csms or "external"
             self.occupied_by = csms
             await self._update_occupancy(csms)
+            self.csms_session = await self._create_csms_session(
+                csms_name=csms,
+                id_tag=id_tag,
+                connector_id=connector_id,
+                meter_start=meter_start,
+            )
 
         await self._save_active_transaction(self.proxy_tx_id)
 
@@ -885,8 +911,12 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         )
 
         if self.active_session and self.occupied_by == "self":
-            await self._update_session_stopped(meter_stop)
+            await self._update_session_stopped(meter_stop, reason)
             self.active_session = None
+
+        if self.csms_session:
+            await self._close_csms_session(meter_stop, reason)
+            self.csms_session = None
 
         self.occupied_by = None
         await self._clear_occupancy()
@@ -926,20 +956,29 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         await self._send_to_csms(csms_name, json.dumps(frame))
 
     async def _on_meter_values(self, payload: dict):
-        if not self.active_session or self.occupied_by != "self":
+        """
+        Записать телеметрию в текущую сессию — как в нашу платную,
+        так и во внешнюю (Charge24, Spark). Для платной сессии здесь же
+        пересчитывается биллинг.
+        """
+        session = self.active_session if self.occupied_by == "self" else None
+        if session is None:
+            session = self.csms_session
+        if session is None:
             return
 
         for mv in payload.get("meterValue", []):
-            for sv in mv.get("sampledValue", []):
-                measurand = sv.get(
-                    "measurand", "Energy.Active.Import.Register"
-                )
-                if measurand == "Energy.Active.Import.Register":
-                    val = sv.get("value")
-                    if val is not None:
-                        await self._update_session_consumption(
-                            Decimal(str(val))
-                        )
+            sampled = mv.get("sampledValue", [])
+            sample = ChargingSessionMeterValue.parse_sampled_values(sampled)
+            if not sample:
+                continue
+            sampled_at = self._parse_timestamp(mv.get("timestamp"))
+            await self._record_meter_sample(
+                session_id=session.id,
+                sample=sample,
+                raw=sampled,
+                sampled_at=sampled_at,
+            )
 
     # ================================================================
     #  MONITOR LOOP  (payment sessions / billing)
@@ -1053,7 +1092,16 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     def _get_active_session(self):
         return ChargingSession.objects.filter(
             charge_point=self.charge_point,
+            source=ChargingSession.SOURCE_PAYMENT,
             status__in=["preparing", "charging"],
+        ).first()
+
+    @database_sync_to_async
+    def _get_active_csms_session(self):
+        return ChargingSession.objects.filter(
+            charge_point=self.charge_point,
+            source=ChargingSession.SOURCE_CSMS,
+            status="charging",
         ).first()
 
     @database_sync_to_async
@@ -1080,31 +1128,132 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         self.active_session = s
 
     @database_sync_to_async
-    def _update_session_stopped(self, meter_stop):
+    def _update_session_stopped(self, meter_stop, reason: str = ""):
         if not self.active_session:
             return
         s = ChargingSession.objects.get(id=self.active_session.id)
         if meter_stop is not None:
             s.update_consumption(meter_stop)
+            s.stop_meter_value = Decimal(str(meter_stop))
+        s.stop_reason = reason or ""
         s.status = "completed"
         s.stopped_at = datetime.now(timezone.utc)
         s.save()
 
+    # ---- external CSMS sessions (history only, no billing) ----
+
     @database_sync_to_async
-    def _update_session_consumption(self, meter_wh: Decimal):
-        if not self.active_session:
+    def _create_csms_session(
+        self,
+        csms_name: str,
+        id_tag: str,
+        connector_id: int,
+        meter_start: Decimal,
+    ):
+        """
+        Открыть запись сессии для зарядки, начатой внешним CSMS.
+        Незакрытые сессии этой станции помечаются как оборванные —
+        StopTransaction по ним мы уже не получим.
+        """
+        ChargingSession.objects.filter(
+            charge_point=self.charge_point,
+            source=ChargingSession.SOURCE_CSMS,
+            status="charging",
+        ).update(
+            status="error",
+            stop_reason="superseded",
+            stopped_at=datetime.now(timezone.utc),
+        )
+
+        session = ChargingSession.objects.create(
+            charge_point=self.charge_point,
+            source=ChargingSession.SOURCE_CSMS,
+            csms_name=csms_name,
+            transaction_id=self.proxy_tx_id,
+            csms_transaction_id=self.csms_tx_ids.get(csms_name),
+            connector_id=connector_id,
+            id_tag=id_tag or "",
+            status="charging",
+            cost_per_kwh=Decimal("0"),
+            started_at=datetime.now(timezone.utc),
+            start_meter_value=meter_start,
+            last_meter_value=meter_start,
+        )
+        logger.info(
+            f"[CSMS SESSION] CP={self.cp_id} session={session.id} "
+            f"csms={csms_name} tx={self.proxy_tx_id} tag={id_tag}"
+        )
+        return session
+
+    @database_sync_to_async
+    def _close_csms_session(self, meter_stop, reason: str = ""):
+        if not self.csms_session:
             return
         try:
-            s = ChargingSession.objects.get(id=self.active_session.id)
-            s.update_consumption(meter_wh)
-            s.save()
+            s = ChargingSession.objects.get(id=self.csms_session.id)
+        except ChargingSession.DoesNotExist:
+            return
+        if meter_stop is not None:
+            s.update_consumption(meter_stop)
+            s.stop_meter_value = Decimal(str(meter_stop))
+        s.stop_reason = reason or ""
+        s.status = "completed"
+        s.stopped_at = datetime.now(timezone.utc)
+        s.save()
+        logger.info(
+            f"[CSMS SESSION END] session={s.id} kWh={s.consumed_kwh:.3f} "
+            f"duration={s.duration_display} soc={s.start_soc}->{s.last_soc}"
+        )
+
+    @database_sync_to_async
+    def _set_csms_session_tx(self, csms_tx_id: int):
+        if not self.csms_session:
+            return
+        ChargingSession.objects.filter(id=self.csms_session.id).update(
+            csms_transaction_id=csms_tx_id
+        )
+        self.csms_session.csms_transaction_id = csms_tx_id
+
+    # ---- telemetry ----
+
+    @database_sync_to_async
+    def _record_meter_sample(
+        self, session_id: int, sample: dict, raw: list, sampled_at
+    ):
+        """Сохранить кадр MeterValues и обновить агрегаты сессии."""
+        try:
+            s = ChargingSession.objects.get(id=session_id)
+        except ChargingSession.DoesNotExist:
+            return
+
+        s.apply_meter_sample(sample, sampled_at=sampled_at)
+        s.save()
+
+        ChargingSessionMeterValue.objects.create(
+            session=s,
+            sampled_at=s.last_meter_at,
+            energy_wh=sample.get("energy_wh"),
+            consumed_kwh=s.consumed_kwh,
+            power_kw=sample.get("power_kw"),
+            soc=sample.get("soc"),
+            voltage=sample.get("voltage"),
+            current=sample.get("current"),
+            temperature=sample.get("temperature"),
+            raw=raw,
+        )
+
+        if s.source == ChargingSession.SOURCE_PAYMENT:
             self.active_session = s
             logger.info(
                 f"[BILL] s={s.id} kWh={s.consumed_kwh:.3f} "
                 f"cost={s.total_cost:.2f} left={s.remaining_balance:.2f}"
             )
-        except ChargingSession.DoesNotExist:
-            self.active_session = None
+        else:
+            self.csms_session = s
+            logger.info(
+                f"[CSMS MV] s={s.id} kWh={s.consumed_kwh:.3f} "
+                f"power={s.last_power_kw} soc={s.last_soc}"
+            )
 
     @database_sync_to_async
     def _update_occupancy(self, occupied_by: str):
@@ -1198,6 +1347,19 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @staticmethod
+    def _parse_timestamp(value) -> datetime:
+        """timestamp из MeterValues → aware datetime (fallback — сейчас)."""
+        if not value:
+            return datetime.now(timezone.utc)
+        try:
+            moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.now(timezone.utc)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment
 
     def _learn_csms_clock_offset(self, csms_name: str, current_time: str):
         """
