@@ -61,8 +61,11 @@ class StaffApiTests(TestCase):
             rows = self.client.get(f"{BASE}/resources/chargepoint/").json()["results"]
             detail = self.client.get(f"{BASE}/resources/chargepoint/{self.station.pk}/").json()
         self.assertEqual(rows[0]["cp_id"], "CP-1")
-        self.assertEqual(rows[0]["online"]["value"], "online")
+        self.assertEqual(rows[0]["state"]["value"], "free")
         self.assertIn("start_charging_action", detail["_actions"])
+        self.assertEqual(detail["sessions_total"], 1)
+        self.assertEqual(detail["revenue_total"], 100.0)
+        self.assertEqual(detail["recent_sessions"]["rows"][0]["status"], "Зарядка")
 
     def test_session_detail_has_telemetry(self):
         self.login(self.admin)

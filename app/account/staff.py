@@ -6,6 +6,8 @@ from io import BytesIO
 import qrcode
 from django.contrib.admin.models import ADDITION, CHANGE, DELETION, LogEntry
 from django.contrib.auth.models import Group
+from django.db.models import Count, Q, Sum
+from django.utils import timezone
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import HttpResponse
@@ -42,8 +44,9 @@ logger = logging.getLogger(__name__)
 
 TELEMETRY_POINTS = 120
 MEASUREMENTS_SHOWN = 30
+RECENT_SESSIONS = 10
 
-ONLINE_BADGES = {"online": "green", "offline": "red"}
+STATE_BADGES = {"charging": "cyan", "busy": "amber", "free": "green", "offline": "red", "unknown": "gray"}
 SESSION_BADGES = {
     "preparing": "amber",
     "charging": "cyan",
@@ -89,7 +92,7 @@ class ChargePointResource(StaffResource):
     order = 10
     auto_refresh = 30
 
-    list_display = ("id", "cp_id", "name", "online", "is_occupied", "occupied_by", "active_transaction_id")
+    list_display = ("id", "cp_id", "name", "state", "occupied_by", "sessions_today")
     list_display_links = ("id", "cp_id", "name")
     list_filter = ("is_occupied",)
     search_fields = ("cp_id", "name", "charge24_cp_id")
@@ -97,13 +100,15 @@ class ChargePointResource(StaffResource):
     ordering = ("name",)
 
     fieldsets = [
-        ("Станция", ("cp_id", "name", "charge24_cp_id", "online")),
+        ("Станция", ("cp_id", "name", "charge24_cp_id", "state")),
         ("Состояние", ("is_occupied", "occupied_by", "active_transaction_id")),
+        ("Итоги", ("sessions_total", "energy_total", "revenue_total", "recent_sessions")),
         ("Оплата", ("payment_qr_link",)),
         ("Служебное", ("created_at", "updated_at")),
     ]
     readonly_fields = (
-        "online", "is_occupied", "occupied_by", "active_transaction_id", "created_at", "updated_at",
+        "state", "is_occupied", "occupied_by", "active_transaction_id", "created_at", "updated_at",
+        "sessions_today", "sessions_total", "energy_total", "revenue_total", "recent_sessions",
     )
     labels = {
         "cp_id": "ID станции", "name": "Название", "charge24_cp_id": "ID в Charge24",
@@ -119,18 +124,70 @@ class ChargePointResource(StaffResource):
 
     def describe_field(self, name):
         info = super().describe_field(name)
-        if name == "online":
-            info["badges"] = _badges(ONLINE_BADGES)
+        if name == "state":
+            info["badges"] = _badges(STATE_BADGES)
         return info
 
-    @display("Связь", type="badge")
-    def online(self, obj):
+    @display("Состояние", type="badge")
+    def state(self, obj):
         try:
             connected = is_cp_connected(obj.cp_id)
         except Exception:
             logger.exception("Не удалось проверить связь со станцией %s", obj.cp_id)
-            return {"value": "offline", "label": "Нет данных"}
-        return {"value": "online", "label": "На связи"} if connected else {"value": "offline", "label": "Нет связи"}
+            return {"value": "unknown", "label": "Нет данных"}
+        if not connected:
+            return {"value": "offline", "label": "Нет связи"}
+        if obj.active_transaction_id:
+            return {"value": "charging", "label": "Заряжает"}
+        if obj.is_occupied:
+            return {"value": "busy", "label": "Занята"}
+        return {"value": "free", "label": "Свободна"}
+
+    def annotate_rows(self, request, qs):
+        today = timezone.localdate()
+        return qs.annotate(
+            _sessions_today=Count("sessions", filter=Q(sessions__started_at__date=today), distinct=True),
+        )
+
+    @display("Сессий сегодня", type="integer")
+    def sessions_today(self, obj):
+        return getattr(obj, "_sessions_today", None) or 0
+
+    def _totals(self, obj):
+        return obj.sessions.aggregate(count=Count("id"), kwh=Sum("consumed_kwh"))
+
+    @display("Сессий за всё время", type="integer")
+    def sessions_total(self, obj):
+        return self._totals(obj)["count"]
+
+    @display("Выдано энергии, кВт⋅ч", type="decimal")
+    def energy_total(self, obj):
+        return round(float(self._totals(obj)["kwh"] or 0), 1)
+
+    @display("Оплачено, сом", type="decimal")
+    def revenue_total(self, obj):
+        total = obj.qr_payments.filter(status="success").aggregate(total=Sum("amount"))["total"]
+        return round(float(total or 0), 2)
+
+    @display("Последние сессии", type="table")
+    def recent_sessions(self, obj):
+        statuses = dict(ChargingSession.STATUS_CHOICES)
+        rows = obj.sessions.order_by("-created_at")[:RECENT_SESSIONS]
+        return {
+            "columns": [
+                {"name": "id", "label": "№"}, {"name": "started", "label": "Начало"},
+                {"name": "status", "label": "Статус"}, {"name": "kwh", "label": "кВт⋅ч"},
+                {"name": "cost", "label": "Сумма, сом"},
+            ],
+            "rows": [
+                {
+                    "id": row.pk, "started": row.started_at.isoformat() if row.started_at else None,
+                    "status": statuses.get(row.status, row.status), "kwh": _number(row.consumed_kwh),
+                    "cost": _number(row.total_cost),
+                }
+                for row in rows
+            ],
+        }
 
     # --- команды станции ---------------------------------------------------
 
@@ -269,7 +326,7 @@ class ChargingSessionResource(BadgesMixin, StaffResource):
 
     list_display = (
         "id", "charge_point", "source", "status", "started_at", "duration",
-        "consumed_kwh", "soc_progress", "power", "total_cost",
+        "consumed_kwh", "soc_progress", "total_cost",
     )
     list_display_links = ("id",)
     list_filter = ("status", "source", "csms_name", "charge_point", "started_at")

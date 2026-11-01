@@ -270,6 +270,16 @@ export function ValueView({
   }
 }
 
+const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/
+
+/** Ячейка мини-таблицы: даты и числа — по-человечески, пустое — прочерком. */
+function cell(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—'
+  if (typeof value === 'number') return value.toLocaleString('ru-RU')
+  if (typeof value === 'string' && ISO_DATETIME.test(value)) return formatDateTime(value)
+  return String(value)
+}
+
 function MiniTable({ value }: { value: TableValue }) {
   if (!value.rows.length) return <p className="text-sm text-muted-foreground">Нет данных</p>
   return (
@@ -288,8 +298,8 @@ function MiniTable({ value }: { value: TableValue }) {
           {value.rows.map((row, index) => (
             <tr key={String(row.id ?? index)} className="border-t">
               {value.columns.map((column) => (
-                <td key={column.name} className="px-3 py-2 tabular-nums">
-                  {String(row[column.name] ?? '')}
+                <td key={column.name} className="px-3 py-2 whitespace-nowrap tabular-nums">
+                  {cell(row[column.name])}
                 </td>
               ))}
             </tr>

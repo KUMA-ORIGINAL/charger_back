@@ -121,6 +121,8 @@ export function DashboardPage({
         </p>
       )}
 
+      <LiveStrip data={data} />
+
       <Metrics data={data} />
 
       <div className="grid grid-cols-[minmax(0,1fr)] gap-4 @4xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
@@ -196,6 +198,35 @@ function Delta({ value }: { value: number | null }) {
       </span>
       к прошлому периоду
     </span>
+  )
+}
+
+/** Что происходит прямо сейчас — не зависит от выбранного периода. */
+function LiveStrip({ data }: { data?: Dashboard }) {
+  if (!data) return <Skeleton className="h-9 w-full max-w-md" />
+  const offline = data.stations.filter((station) => station.online === false).length
+  const items = [
+    { label: 'Заряжается', value: data.active_sessions, tone: 'bg-success led-live' },
+    {
+      label: 'Без связи',
+      value: offline,
+      tone: offline ? 'bg-destructive' : 'bg-muted-foreground/50',
+    },
+    { label: 'Станций', value: data.stations.length, tone: 'bg-muted-foreground/50' },
+  ]
+  return (
+    <ul className="flex flex-wrap gap-2" aria-label="Сейчас">
+      {items.map((item) => (
+        <li
+          key={item.label}
+          className="flex items-center gap-2 rounded-full border bg-card px-3 py-1.5 text-sm"
+        >
+          <span aria-hidden className={cn('size-2 rounded-full', item.tone)} />
+          <span className="text-muted-foreground">{item.label}</span>
+          <span className="font-semibold tabular-nums">{item.value}</span>
+        </li>
+      ))}
+    </ul>
   )
 }
 

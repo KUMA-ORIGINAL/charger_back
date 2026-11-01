@@ -23,7 +23,7 @@ class QRPaymentResource(StaffResource):
     can_change = False
     can_delete = False
 
-    list_display = ("created_at", "charge_point", "amount", "status", "paid_at", "bank_id")
+    list_display = ("created_at", "charge_point", "charging_session", "amount", "status", "paid_at")
     list_display_links = ("created_at",)
     list_filter = ("status", "charge_point", "created_at")
     search_fields = ("bank_id", "charge_point__cp_id")
