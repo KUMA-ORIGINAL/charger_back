@@ -6,9 +6,11 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import websockets
+from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
 
+from account.services.ocpp_commands import mark_cp_offline, mark_cp_online
 from account.models import (
     ChargePoint,
     ChargePointCSMS,
@@ -134,6 +136,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.cp_id, self.channel_name)
 
         await self.accept(subprotocol="ocpp1.6")
+        await self._touch_presence()
 
         csms_list = ", ".join(self.remote_connections) or "none"
         logger.info(f"[CONNECTED] CP={self.cp_id} CSMS=[{csms_list}]")
@@ -149,6 +152,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
 
         if hasattr(self, "cp_id"):
             await self.channel_layer.group_discard(self.cp_id, self.channel_name)
+            await sync_to_async(mark_cp_offline)(self.cp_id, self.channel_name)
 
         logger.info(
             f"[DISCONNECT] CP={getattr(self, 'cp_id', '?')} code={close_code}"
@@ -290,8 +294,16 @@ class OCPPConsumer(AsyncWebsocketConsumer):
     #  RECEIVE FROM STATION
     # ================================================================
 
+    async def _touch_presence(self):
+        """Не даёт ошибке кэша оборвать работу со станцией: presence — вторично."""
+        try:
+            await sync_to_async(mark_cp_online)(self.cp_id, self.channel_name)
+        except Exception:
+            logger.exception(f"[PRESENCE] CP={self.cp_id} не удалось обновить")
+
     async def receive(self, text_data=None, bytes_data=None):
         logger.info(f"[ST→PX] CP={self.cp_id} {text_data}")
+        await self._touch_presence()
 
         try:
             frame = json.loads(text_data)

@@ -13,6 +13,7 @@ import time
 import uuid
 
 from asgiref.sync import async_to_sync
+from django.core.cache import cache
 from channels.layers import get_channel_layer
 
 
@@ -30,18 +31,32 @@ def ocpp_call(cp_id: str, action: str, payload: dict):
     )
 
 
-async def _is_cp_connected_async(cp_id: str) -> bool:
-    layer = get_channel_layer()
-    group_key = f"{layer.prefix}:group:{cp_id}".encode("utf8")
-    now = time.time()
-    async with layer.connection(layer.consistent_hash(cp_id)) as conn:
-        members = await conn.zrangebyscore(group_key, now, "+inf")
-    return bool(members)
+# Присутствие станции: ключ в общем кэше (Redis), который консьюмер продлевает
+# на каждое сообщение станции (heartbeat раз в ~30 секунд) и снимает при
+# отключении. Членство в группе channels для этого не годится: при падении или
+# рестарте процесса запись о нём остаётся в группе до суток.
+PRESENCE_TTL = 120
+
+
+def _presence_key(cp_id: str) -> str:
+    return f"ocpp:presence:{cp_id}"
+
+
+def mark_cp_online(cp_id: str, token: str) -> None:
+    """Станция подала признак жизни; ``token`` — канал консьюмера, держащего соединение."""
+    cache.set(_presence_key(cp_id), token, PRESENCE_TTL)
+
+
+def mark_cp_offline(cp_id: str, token: str) -> None:
+    """Соединение закрыто. Чужой токен не трогаем: станция уже могла переподключиться."""
+    key = _presence_key(cp_id)
+    if cache.get(key) == token:
+        cache.delete(key)
 
 
 def is_cp_connected(cp_id: str) -> bool:
     """Return True if the charge point has an active WebSocket connection."""
-    return async_to_sync(_is_cp_connected_async)(cp_id)
+    return cache.get(_presence_key(cp_id)) is not None
 
 
 def start_charging(cp_id: str, connector_id: int = 1, id_tag: str = "ADMIN"):
