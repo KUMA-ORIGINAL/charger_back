@@ -1,0 +1,2 @@
+# Biome требует LF; без этого на Windows (core.autocrlf=true) lint падает на каждом файле.
+* text=auto eol=lf

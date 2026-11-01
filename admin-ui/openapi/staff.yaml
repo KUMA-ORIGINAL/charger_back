@@ -1,0 +1,827 @@
+openapi: 3.0.3
+info:
+  title: Charger Staff API
+  version: 1.0.0
+  description: API React-админки (admin-ui).
+paths:
+  /api/staff/v1/auth/csrf/:
+    get:
+      operationId: staff_csrf
+      description: Ставит куку csrftoken — фронт вызывает перед входом.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Detail'
+          description: ''
+  /api/staff/v1/auth/login/:
+    post:
+      operationId: staff_login
+      description: |-
+        Сессия Django вместо JWT и snake_case вместо camelCase.
+
+        Админка открывается с того же домена, поэтому сессионная кука (httpOnly) +
+        CSRF надёжнее токена в браузере. Имена полей в ответах совпадают с именами
+        полей модели — по ним фронт сопоставляет данные с описанием из ``/meta/``.
+      tags:
+      - api
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Detail'
+          description: ''
+  /api/staff/v1/auth/logout/:
+    post:
+      operationId: staff_logout
+      description: |-
+        Сессия Django вместо JWT и snake_case вместо camelCase.
+
+        Админка открывается с того же домена, поэтому сессионная кука (httpOnly) +
+        CSRF надёжнее токена в браузере. Имена полей в ответах совпадают с именами
+        полей модели — по ним фронт сопоставляет данные с описанием из ``/meta/``.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Detail'
+          description: ''
+  /api/staff/v1/auth/me/:
+    get:
+      operationId: staff_me
+      description: |-
+        Сессия Django вместо JWT и snake_case вместо camelCase.
+
+        Админка открывается с того же домена, поэтому сессионная кука (httpOnly) +
+        CSRF надёжнее токена в браузере. Имена полей в ответах совпадают с именами
+        полей модели — по ним фронт сопоставляет данные с описанием из ``/meta/``.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+          description: ''
+  /api/staff/v1/dashboard/:
+    get:
+      operationId: staff_dashboard
+      description: |-
+        Сессия Django вместо JWT и snake_case вместо camelCase.
+
+        Админка открывается с того же домена, поэтому сессионная кука (httpOnly) +
+        CSRF надёжнее токена в браузере. Имена полей в ответах совпадают с именами
+        полей модели — по ним фронт сопоставляет данные с описанием из ``/meta/``.
+      parameters:
+      - in: query
+        name: date_from
+        schema:
+          type: string
+        description: YYYY-MM-DD, по умолчанию — начало месяца
+      - in: query
+        name: date_to
+        schema:
+          type: string
+        description: YYYY-MM-DD, по умолчанию — сегодня
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dashboard'
+          description: ''
+  /api/staff/v1/meta/:
+    get:
+      operationId: staff_meta
+      description: |-
+        Сессия Django вместо JWT и snake_case вместо camelCase.
+
+        Админка открывается с того же домена, поэтому сессионная кука (httpOnly) +
+        CSRF надёжнее токена в браузере. Имена полей в ответах совпадают с именами
+        полей модели — по ним фронт сопоставляет данные с описанием из ``/meta/``.
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Meta'
+          description: ''
+  /api/staff/v1/nav-badges/:
+    get:
+      operationId: staff_nav_badges
+      description: 'Счётчики проблем для меню: дешевле дашборда, меню спрашивает их
+        раз в минуту.'
+      tags:
+      - api
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NavBadges'
+          description: ''
+components:
+  schemas:
+    ActionField:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        type:
+          $ref: '#/components/schemas/FieldTypeEnum'
+        required:
+          type: boolean
+        help_text:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Choice'
+      required:
+      - label
+      - name
+      - type
+    ActionMeta:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        detail:
+          type: boolean
+        confirm:
+          type: string
+          nullable: true
+        variant:
+          $ref: '#/components/schemas/ActionVariantEnum'
+        permission:
+          type: string
+        icon:
+          type: string
+          nullable: true
+        form:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionField'
+          nullable: true
+      required:
+      - confirm
+      - detail
+      - form
+      - icon
+      - label
+      - name
+      - permission
+      - variant
+    ActionVariantEnum:
+      enum:
+      - default
+      - destructive
+      type: string
+      description: |-
+        * `default` - default
+        * `destructive` - destructive
+    Choice:
+      type: object
+      properties:
+        value: {}
+        label:
+          type: string
+      required:
+      - label
+      - value
+    ColumnMeta:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        type:
+          $ref: '#/components/schemas/FieldTypeEnum'
+        help_text:
+          type: string
+        required:
+          type: boolean
+        read_only:
+          type: boolean
+        computed:
+          type: boolean
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Choice'
+        related_resource:
+          type: string
+          nullable: true
+        decimal_places:
+          type: integer
+        max_length:
+          type: integer
+        badges:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+        format:
+          nullable: true
+          oneOf:
+          - $ref: '#/components/schemas/FormatEnum'
+          - $ref: '#/components/schemas/NullEnum'
+        write_only:
+          type: boolean
+          description: Поле только для записи (пароль)
+        default:
+          description: Значение по умолчанию для формы создания
+        sortable:
+          type: boolean
+      required:
+      - badges
+      - computed
+      - format
+      - help_text
+      - label
+      - name
+      - read_only
+      - required
+      - sortable
+      - type
+    Dashboard:
+      type: object
+      properties:
+        date_from:
+          type: string
+          format: date
+        date_to:
+          type: string
+          format: date
+        summary:
+          $ref: '#/components/schemas/Summary'
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/DayPoint'
+        stations:
+          type: array
+          items:
+            $ref: '#/components/schemas/StationStatus'
+        active_sessions:
+          type: integer
+          description: Сессий в статусах «Подготовка» и «Зарядка» сейчас
+      required:
+      - active_sessions
+      - date_from
+      - date_to
+      - days
+      - stations
+      - summary
+    DayPoint:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        revenue:
+          type: number
+          format: double
+        sessions:
+          type: integer
+        kwh:
+          type: number
+          format: double
+      required:
+      - date
+      - kwh
+      - revenue
+      - sessions
+    Detail:
+      type: object
+      properties:
+        detail:
+          type: string
+      required:
+      - detail
+    FieldMeta:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        type:
+          $ref: '#/components/schemas/FieldTypeEnum'
+        help_text:
+          type: string
+        required:
+          type: boolean
+        read_only:
+          type: boolean
+        computed:
+          type: boolean
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Choice'
+        related_resource:
+          type: string
+          nullable: true
+        decimal_places:
+          type: integer
+        max_length:
+          type: integer
+        badges:
+          type: object
+          additionalProperties:
+            type: string
+          nullable: true
+        format:
+          nullable: true
+          oneOf:
+          - $ref: '#/components/schemas/FormatEnum'
+          - $ref: '#/components/schemas/NullEnum'
+        write_only:
+          type: boolean
+          description: Поле только для записи (пароль)
+        default:
+          description: Значение по умолчанию для формы создания
+      required:
+      - badges
+      - computed
+      - format
+      - help_text
+      - label
+      - name
+      - read_only
+      - required
+      - type
+    FieldTypeEnum:
+      enum:
+      - string
+      - text
+      - integer
+      - decimal
+      - number
+      - boolean
+      - date
+      - datetime
+      - time
+      - choice
+      - fk
+      - m2m
+      - image
+      - file
+      - json
+      - email
+      - url
+      - phone
+      - multichoice
+      - password
+      - badge
+      - table
+      - link
+      - series
+      type: string
+      description: |-
+        * `string` - string
+        * `text` - text
+        * `integer` - integer
+        * `decimal` - decimal
+        * `number` - number
+        * `boolean` - boolean
+        * `date` - date
+        * `datetime` - datetime
+        * `time` - time
+        * `choice` - choice
+        * `fk` - fk
+        * `m2m` - m2m
+        * `image` - image
+        * `file` - file
+        * `json` - json
+        * `email` - email
+        * `url` - url
+        * `phone` - phone
+        * `multichoice` - multichoice
+        * `password` - password
+        * `badge` - badge
+        * `table` - table
+        * `link` - link
+        * `series` - series
+    FieldsetMeta:
+      type: object
+      properties:
+        title:
+          type: string
+          nullable: true
+        fields:
+          type: array
+          items:
+            type: string
+      required:
+      - fields
+      - title
+    FilterMeta:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        type:
+          $ref: '#/components/schemas/FilterTypeEnum'
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Choice'
+        related_resource:
+          type: string
+          nullable: true
+      required:
+      - label
+      - name
+      - type
+    FilterTypeEnum:
+      enum:
+      - choice
+      - boolean
+      - relation
+      - date_range
+      - number_range
+      - exact
+      type: string
+      description: |-
+        * `choice` - choice
+        * `boolean` - boolean
+        * `relation` - relation
+        * `date_range` - date_range
+        * `number_range` - number_range
+        * `exact` - exact
+    FormatEnum:
+      enum:
+      - money
+      type: string
+      description: '* `money` - money'
+    InlineColumn:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        type:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Choice'
+          nullable: true
+        format:
+          nullable: true
+          oneOf:
+          - $ref: '#/components/schemas/FormatEnum'
+          - $ref: '#/components/schemas/NullEnum'
+      required:
+      - choices
+      - format
+      - label
+      - name
+      - type
+    InlineMeta:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineColumn'
+        resource:
+          type: string
+          nullable: true
+          description: 'Ресурс строк: если доступен — строки редактируемые'
+        fk:
+          type: string
+          nullable: true
+          description: Поле связи строки с родителем
+      required:
+      - columns
+      - fk
+      - label
+      - name
+      - resource
+    LinkMeta:
+      type: object
+      properties:
+        label:
+          type: string
+        to:
+          type: string
+        icon:
+          type: string
+          nullable: true
+      required:
+      - icon
+      - label
+      - to
+    LoginRequest:
+      type: object
+      properties:
+        phone_number:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+      required:
+      - password
+      - phone_number
+    Me:
+      type: object
+      properties:
+        id:
+          type: integer
+        phone_number:
+          type: string
+        full_name:
+          type: string
+        role:
+          type: string
+        role_label:
+          type: string
+        is_superuser:
+          type: boolean
+      required:
+      - full_name
+      - id
+      - is_superuser
+      - phone_number
+      - role
+      - role_label
+    Meta:
+      type: object
+      properties:
+        resources:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResourceMeta'
+      required:
+      - resources
+    NavBadges:
+      type: object
+      properties:
+        badges:
+          type: object
+          additionalProperties:
+            type: integer
+          description: 'Раздел → число проблем: chargepoint (станции без связи), chargingsession
+            (ошибки за сутки)'
+      required:
+      - badges
+    NullEnum:
+      enum:
+      - null
+    Permissions:
+      type: object
+      properties:
+        view:
+          type: boolean
+        add:
+          type: boolean
+        change:
+          type: boolean
+        delete:
+          type: boolean
+      required:
+      - add
+      - change
+      - delete
+      - view
+    ResourceMeta:
+      type: object
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        label_plural:
+          type: string
+        group:
+          type: string
+        icon:
+          type: string
+        order:
+          type: integer
+        hidden:
+          type: boolean
+        links:
+          type: array
+          items:
+            $ref: '#/components/schemas/LinkMeta'
+        auto_refresh:
+          type: integer
+          description: Секунды между автообновлениями списка, 0 — выключено
+        list_tabs:
+          type: string
+          nullable: true
+          description: Фильтр-поле вкладок над списком; счётчики — в tab_counts ответа
+            списка
+        permissions:
+          $ref: '#/components/schemas/Permissions'
+        list_display:
+          type: array
+          items:
+            $ref: '#/components/schemas/ColumnMeta'
+        list_display_links:
+          type: array
+          items:
+            type: string
+        list_filter:
+          type: array
+          items:
+            $ref: '#/components/schemas/FilterMeta'
+        search:
+          $ref: '#/components/schemas/SearchMeta'
+        ordering:
+          type: array
+          items:
+            type: string
+        per_page:
+          type: integer
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldMeta'
+        fieldsets:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldsetMeta'
+        inlines:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineMeta'
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionMeta'
+        export:
+          type: boolean
+      required:
+      - actions
+      - auto_refresh
+      - export
+      - fields
+      - fieldsets
+      - group
+      - hidden
+      - icon
+      - inlines
+      - key
+      - label
+      - label_plural
+      - links
+      - list_display
+      - list_display_links
+      - list_filter
+      - list_tabs
+      - order
+      - ordering
+      - per_page
+      - permissions
+      - search
+    SearchMeta:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        help:
+          type: string
+      required:
+      - enabled
+      - help
+    StationStatus:
+      type: object
+      properties:
+        id:
+          type: integer
+        cp_id:
+          type: string
+        name:
+          type: string
+        online:
+          type: boolean
+          nullable: true
+          description: null — связь проверить не удалось
+        charging:
+          type: boolean
+        session_id:
+          type: integer
+          nullable: true
+        power_kw:
+          type: number
+          format: double
+          nullable: true
+        soc:
+          type: number
+          format: double
+          nullable: true
+        sessions_today:
+          type: integer
+      required:
+      - charging
+      - cp_id
+      - id
+      - name
+      - online
+      - power_kw
+      - session_id
+      - sessions_today
+      - soc
+    Summary:
+      type: object
+      properties:
+        revenue:
+          type: number
+          format: double
+          description: Оплаченные QR-платежи за период, сом
+        payments:
+          type: integer
+        sessions:
+          type: integer
+        kwh:
+          type: number
+          format: double
+        previous_revenue:
+          type: number
+          format: double
+        previous_payments:
+          type: integer
+        previous_sessions:
+          type: integer
+        previous_kwh:
+          type: number
+          format: double
+      required:
+      - kwh
+      - payments
+      - previous_kwh
+      - previous_payments
+      - previous_revenue
+      - previous_sessions
+      - revenue
+      - sessions
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid

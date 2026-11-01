@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     "phonenumber_field",
     "import_export",
 
+    'staff',
     'account',
     'payments',
 ]

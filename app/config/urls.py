@@ -32,6 +32,9 @@ urlpatterns = [
 
     path('api/health/', views.health_check, name='health_check'),
 
+    # React-админка (admin-ui), раздаётся nginx по /panel/.
+    path('api/staff/v1/', include('staff.urls')),
+
     path('api/', include('account.api_urls')),
     path('api/', include('payments.urls')),
 ]

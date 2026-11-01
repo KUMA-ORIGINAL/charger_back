@@ -1,0 +1,13 @@
+node_modules
+dist
+test-results
+playwright-report
+blob-report
+playwright/.cache
+coverage
+*.local
+.tanstack
+e2e/.auth/
+
+# Корневой .gitignore (шаблон Python) игнорирует lib/ — а здесь это исходники.
+!src/shared/lib/
