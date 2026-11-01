@@ -905,17 +905,18 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         tx_id = payload.get("transactionId")
         meter_stop = payload.get("meterStop")
         reason = payload.get("reason", "")
+        stopped_at = payload.get("timestamp")
 
         logger.info(
             f"[STOP TX] CP={self.cp_id} tx={tx_id} reason={reason}"
         )
 
         if self.active_session and self.occupied_by == "self":
-            await self._update_session_stopped(meter_stop, reason)
+            await self._update_session_stopped(meter_stop, reason, stopped_at)
             self.active_session = None
 
         if self.csms_session:
-            await self._close_csms_session(meter_stop, reason)
+            await self._close_csms_session(meter_stop, reason, stopped_at)
             self.csms_session = None
 
         self.occupied_by = None
@@ -1128,7 +1129,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         self.active_session = s
 
     @database_sync_to_async
-    def _update_session_stopped(self, meter_stop, reason: str = ""):
+    def _update_session_stopped(self, meter_stop, reason: str = "", stopped_at=None):
         if not self.active_session:
             return
         s = ChargingSession.objects.get(id=self.active_session.id)
@@ -1137,8 +1138,29 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             s.stop_meter_value = Decimal(str(meter_stop))
         s.stop_reason = reason or ""
         s.status = "completed"
-        s.stopped_at = datetime.now(timezone.utc)
+        s.stopped_at = self._stop_moment(stopped_at, s.started_at)
         s.save()
+
+    @staticmethod
+    def _stop_moment(station_timestamp, started_at):
+        """
+        Момент остановки по часам станции: StopTransaction может прийти
+        позже (после обрыва связи), и время получения исказило бы
+        длительность. Время вне [старт, сейчас] — часы станции врут,
+        тогда берём момент получения.
+        """
+        now = datetime.now(timezone.utc)
+        if not station_timestamp:
+            return now
+        try:
+            moment = datetime.fromisoformat(str(station_timestamp).replace("Z", "+00:00"))
+        except ValueError:
+            return now
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        if moment > now or (started_at and moment < started_at):
+            return now
+        return moment
 
     # ---- external CSMS sessions (history only, no billing) ----
 
@@ -1186,7 +1208,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
         return session
 
     @database_sync_to_async
-    def _close_csms_session(self, meter_stop, reason: str = ""):
+    def _close_csms_session(self, meter_stop, reason: str = "", stopped_at=None):
         if not self.csms_session:
             return
         try:
@@ -1198,7 +1220,7 @@ class OCPPConsumer(AsyncWebsocketConsumer):
             s.stop_meter_value = Decimal(str(meter_stop))
         s.stop_reason = reason or ""
         s.status = "completed"
-        s.stopped_at = datetime.now(timezone.utc)
+        s.stopped_at = self._stop_moment(stopped_at, s.started_at)
         s.save()
         logger.info(
             f"[CSMS SESSION END] session={s.id} kWh={s.consumed_kwh:.3f} "

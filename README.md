@@ -40,3 +40,16 @@ React-админка (`admin-ui/`) работает поверх Django-прил
 python app/manage.py staff_openapi --file admin-ui/openapi/staff.yaml   # после смены описания ресурсов
 cd admin-ui && corepack pnpm install && corepack pnpm api:generate && corepack pnpm dev   # http://localhost:5173/panel/
 ```
+
+# Деплой на прод
+Сервер: `/home/kuma/charger_back` (git от пользователя `kuma`). Обновление:
+
+```bash
+git pull --ff-only && docker compose -f docker-compose.prod.yml up -d --build
+```
+
+**Перезапуск бэкенда рвёт WebSocket со всеми станциями и прерывает идущие зарядки.** Станция
+возвращается сама примерно через 5 минут и присылает отложенный `StopTransaction`, но водитель
+уже недозаряжен. Поэтому выкатывайте, когда нет активных сессий: на дашборде панели счётчик
+«Заряжается» должен быть 0 (или проверьте `ChargingSession` в статусах `preparing`/`charging`).
+После деплоя убедитесь, что станции снова «На связи».
